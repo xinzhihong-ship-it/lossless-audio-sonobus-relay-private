@@ -297,7 +297,7 @@ async function handleHttp(
       sendJson(res, 400, { error: "Group password is too long." });
       return;
     }
-    if (!videoRoom(group) || !user || user === "web-bridge") {
+    if (!videoRoom(group) || !user || isSystemBridgeUser(user)) {
       sendJson(res, 400, { error: "A valid group and user are required." });
       return;
     }
@@ -546,6 +546,10 @@ async function findOrCreateRoomByName(store: Store, name: string, createdBy: str
 
 function cleanWebField(value: string | undefined, maxLength: number): string {
   return (value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+}
+
+function isSystemBridgeUser(user: string): boolean {
+  return user === "web-bridge" || user.startsWith("media-mix-");
 }
 
 async function getWebBridgeStatus(adminUrl: string | undefined): Promise<unknown> {
@@ -2792,7 +2796,7 @@ const adminPageHtml = String.raw`<!doctype html>
 
     function isSystemBridge(connection) {
       return (connection.type === "sonobus-connection" || connection.type === "sonobus-udp")
-        && connection.user === "web-bridge";
+        && (connection.user === "web-bridge" || String(connection.user || "").startsWith("media-mix-"));
     }
 
     function displayConnectionType(connection) {

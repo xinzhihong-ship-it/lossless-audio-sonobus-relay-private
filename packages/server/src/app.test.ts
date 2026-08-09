@@ -114,6 +114,7 @@ test("admin web page is served for browser-based remote administration", async (
     assert.match(html, /末包 /);
     assert.match(html, /系统桥接服务/);
     assert.match(html, /if \(!systemBridge\)/);
+    assert.match(html, /startsWith\("media-mix-"\)/);
   } finally {
     await app.close();
   }
@@ -1863,6 +1864,10 @@ test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs",
 
 
     const adminToken = await login(baseUrl, "admin", "admin-pass");
+    await assert.rejects(
+      post(baseUrl, "/admin/video/pair", adminToken, { group: "studio", user: "media-mix-studio" }),
+      /failed with 400/
+    );
     const pairing = await post<{ pairingId: string; pairingCode: string }>(baseUrl, "/admin/video/pair", adminToken, {
       group: "studio",
       user: "alice"
