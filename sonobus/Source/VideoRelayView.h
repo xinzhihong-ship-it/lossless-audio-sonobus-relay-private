@@ -16,165 +16,140 @@ public:
     explicit VideoRelayView(SonobusAudioProcessor& processor_) : processor(processor_)
     {
         titleLabel.setFont(16.0f);
-        titleLabel.setText(TRANS("自建视频中转"), dontSendNotification);
+        titleLabel.setText(TRANS("H.264 / WebRTC 视频"), dontSendNotification);
         titleLabel.setJustificationType(Justification::centred);
         titleLabel.setAccessible(false);
 
         infoLabel.setFont(13.0f);
         infoLabel.setJustificationType(Justification::centred);
+        infoLabel.setText(TRANS("首次输入管理员后台生成的配对信息。之后只有管理员能开关摄像头和选择设备。"), dontSendNotification);
 
         statusLabel.setFont(13.0f);
         statusLabel.setJustificationType(Justification::centredLeft);
 
-        cameraLabel.setText(TRANS("摄像头:"), dontSendNotification);
-        cameraLabel.setJustificationType(Justification::centredLeft);
-        cameraBox.setTextWhenNothingSelected(TRANS("自动选择"));
-        cameraBox.setTooltip(TRANS("优先使用上次选择的摄像头；设备不可用时自动回退。"));
-        cameraBox.onChange = [this]
-        {
-            const auto selected = cameraBox.getSelectedId() - 1;
-            if (isPositiveAndBelow(selected, cameraDevices.size()))
-                processor.getVideoLinkInfo().cameraDevice = cameraDevices[selected];
-            else
-                processor.getVideoLinkInfo().cameraDevice.clear();
-            processor.restartVideoSender();
-            updateState();
-        };
-        refreshCameraList();
+        pairingLabel.setText(TRANS("配对信息:"), dontSendNotification);
+        pairingLabel.setJustificationType(Justification::centredLeft);
+        pairingEditor.setPasswordCharacter(0x2022);
+        pairingEditor.setTextToShowWhenEmpty(TRANS("SBPAIR1...（仅首次配对）"), Colours::grey);
+        pairingEditor.setTooltip(TRANS("配对密钥只写入 macOS 钥匙串或 Windows 凭据管理器，不写入 DAW 工程。"));
 
-        autoConnectButton.setButtonText(TRANS("自动连接视频"));
-        autoConnectButton.setTooltip(TRANS("SonoBus 加入群组后自动连接摄像头和视频中转服务。"));
-        autoConnectButton.onClick = [this]
+        savePairingButton.setButtonText(TRANS("保存配对"));
+        savePairingButton.onClick = [this]
         {
-            processor.getVideoLinkInfo().autoConnect = autoConnectButton.getToggleState();
-            if (processor.getVideoLinkInfo().autoConnect)
-                processor.restartVideoSender();
+            String error;
+            if (processor.setVideoPairingText(pairingEditor.getText(), error))
+            {
+                pairingEditor.clear();
+                localMessage = TRANS("配对已安全保存；等待管理员控制。 ");
+            }
             else
-                processor.stopVideoSender();
+            {
+                localMessage = error;
+            }
             updateState();
         };
 
-        openButton.setButtonText(TRANS("在浏览器打开视频"));
+        revokePairingButton.setButtonText(TRANS("撤销本机配对"));
+        revokePairingButton.setColour(TextButton::buttonColourId, Colours::darkred.withAlpha(0.7f));
+        revokePairingButton.onClick = [this]
+        {
+            processor.clearVideoPairing();
+            pairingEditor.clear();
+            localMessage = TRANS("本机配对已撤销，管理员无法再开启此摄像头。 ");
+            updateState();
+        };
+
+        openButton.setButtonText(TRANS("在浏览器打开群组视频"));
         openButton.setColour(TextButton::buttonColourId, Colour::fromFloatRGBA(0.1f, 0.4f, 0.6f, 0.6f));
         openButton.setColour(SonoTextButton::outlineColourId, Colour::fromFloatRGBA(0.5f, 0.5f, 0.5f, 0.4f));
-        openButton.onClick = [this]
-        {
-            generateURL().launchInDefaultBrowser();
-        };
+        openButton.onClick = [this] { generateURL().launchInDefaultBrowser(); };
 
         enableButton.setVisible(false);
         dragButton.setVisible(false);
-
         addAndMakeVisible(titleLabel);
         addAndMakeVisible(infoLabel);
         addAndMakeVisible(statusLabel);
-        addAndMakeVisible(cameraLabel);
-        addAndMakeVisible(cameraBox);
-        addAndMakeVisible(autoConnectButton);
+        addAndMakeVisible(pairingLabel);
+        addAndMakeVisible(pairingEditor);
+        addAndMakeVisible(savePairingButton);
+        addAndMakeVisible(revokePairingButton);
         addAndMakeVisible(openButton);
 
         updateState();
         startTimerHz(2);
     }
 
-    ~VideoRelayView() override
-    {
-        stopTimer();
-    }
+    ~VideoRelayView() override { stopTimer(); }
 
     void resized() override
     {
         auto bounds = getLocalBounds().reduced(8);
         titleLabel.setBounds(bounds.removeFromTop(28));
         bounds.removeFromTop(6);
-        infoLabel.setBounds(bounds.removeFromTop(38));
+        infoLabel.setBounds(bounds.removeFromTop(42));
         bounds.removeFromTop(4);
-        statusLabel.setBounds(bounds.removeFromTop(24));
+        statusLabel.setBounds(bounds.removeFromTop(42));
         bounds.removeFromTop(8);
 
-        auto cameraRow = bounds.removeFromTop(28);
-        cameraLabel.setBounds(cameraRow.removeFromLeft(72));
-        cameraRow.removeFromLeft(6);
-        cameraBox.setBounds(cameraRow.removeFromLeft(jmax(120, cameraRow.getWidth() - 140)));
-        cameraRow.removeFromLeft(8);
-        autoConnectButton.setBounds(cameraRow);
-        bounds.removeFromTop(12);
-        openButton.setBounds(bounds.removeFromTop(32));
+        auto pairingRow = bounds.removeFromTop(30);
+        pairingLabel.setBounds(pairingRow.removeFromLeft(72));
+        pairingRow.removeFromLeft(6);
+        savePairingButton.setBounds(pairingRow.removeFromRight(88));
+        pairingRow.removeFromRight(6);
+        pairingEditor.setBounds(pairingRow);
+        bounds.removeFromTop(10);
 
-        minBounds.setSize(420, 220);
-    }
-
-    void updateState()
-    {
-        const auto group = processor.getCurrentJoinedGroup();
-        autoConnectButton.setToggleState(processor.getVideoLinkInfo().autoConnect, dontSendNotification);
-        statusLabel.setText(TRANS("状态: ") + processor.getVideoStatusText(), dontSendNotification);
-        const auto camera = processor.getVideoCameraName();
-        if (camera.isNotEmpty())
-            statusLabel.setText(TRANS("状态: ") + processor.getVideoStatusText() + " · " + camera, dontSendNotification);
-
-        infoLabel.setText(
-            group.isEmpty()
-                ? TRANS("加入 SonoBus 群组后，视频发送端会自动连接。视频链路不采集音频。")
-                : TRANS("摄像头由 SonoBus VST 自动发送；观看者可从服务器管理端打开视频。"),
-            dontSendNotification);
+        auto actionRow = bounds.removeFromTop(32);
+        revokePairingButton.setBounds(actionRow.removeFromLeft(132));
+        actionRow.removeFromLeft(8);
+        openButton.setBounds(actionRow);
+        minBounds.setSize(500, 230);
     }
 
 private:
-    void timerCallback() override
+    void timerCallback() override { updateState(); }
+
+public:
+    void updateState()
     {
-        updateState();
+        const auto group = processor.getCurrentJoinedGroup();
+        const auto paired = processor.hasVideoPairing();
+        auto statusText = TRANS("状态: ") + processor.getVideoStatusText();
+        const auto camera = processor.getVideoCameraName();
+        if (camera.isNotEmpty()) statusText += " · " + camera;
+        if (localMessage.isNotEmpty()) statusText += "\n" + localMessage;
+        statusLabel.setText(statusText, dontSendNotification);
+
+        savePairingButton.setEnabled(!group.isEmpty() && pairingEditor.getText().isNotEmpty());
+        revokePairingButton.setEnabled(paired);
+        openButton.setEnabled(!group.isEmpty());
+        pairingEditor.setEnabled(!group.isEmpty());
+        pairingEditor.setTextToShowWhenEmpty(
+            group.isEmpty() ? TRANS("请先加入 SonoBus 群组")
+                            : paired ? TRANS("已配对；输入新信息可重新配对") : TRANS("粘贴管理员生成的 SBPAIR1..."),
+            Colours::grey);
     }
 
-    void refreshCameraList()
-    {
-        cameraDevices = VideoRelayClient::getCameraDevices();
-        cameraBox.clear();
-
-        if (cameraDevices.isEmpty())
-        {
-            cameraBox.addItem(TRANS("未检测到摄像头"), 1);
-            cameraBox.setEnabled(false);
-            return;
-        }
-
-        cameraBox.setEnabled(true);
-        int selectedId = 0;
-        const auto preferred = processor.getVideoLinkInfo().cameraDevice;
-        for (int i = 0; i < cameraDevices.size(); ++i)
-        {
-            cameraBox.addItem(cameraDevices[i], i + 1);
-            if (cameraDevices[i] == preferred)
-                selectedId = i + 1;
-        }
-        cameraBox.setSelectedId(selectedId, dontSendNotification);
-    }
-
+private:
     juce::URL generateURL() const
     {
         auto host = processor.getRelayServerHost().trim();
-        if (host.isEmpty())
-            host = "127.0.0.1";
-        if (host.containsChar(':') && ! host.startsWithChar('['))
-            host = "[" + host + "]";
-
+        if (host.isEmpty()) host = "127.0.0.1";
+        if (host.containsChar(':') && !host.startsWithChar('[')) host = "[" + host + "]";
         auto group = processor.getCurrentJoinedGroup().trim();
-        if (group.isEmpty())
-            group = "未加入群组";
-
-        StringPairArray params;
-        params.set("room", "SB_" + group);
-        return URL("http://" + host + ":19090/video/view").withParameters(params);
+        if (group.isEmpty()) group = "未加入群组";
+        return URL("http://" + host + ":19090/" + URL::addEscapeChars("SB_" + group, false));
     }
 
     SonobusAudioProcessor& processor;
-    juce::StringArray cameraDevices;
+    String localMessage;
     Label titleLabel;
     Label infoLabel;
     Label statusLabel;
-    Label cameraLabel;
-    ComboBox cameraBox;
-    ToggleButton autoConnectButton;
+    Label pairingLabel;
+    TextEditor pairingEditor;
+    TextButton savePairingButton;
+    TextButton revokePairingButton;
     TextButton openButton;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VideoRelayView)

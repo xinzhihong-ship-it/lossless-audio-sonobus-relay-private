@@ -43,6 +43,30 @@ export type RemoveBanRequest = {
   address?: string;
 };
 
+export type VideoControlRecord = {
+  pairingId: string;
+  group: string;
+  user: string;
+  pairingKeyCiphertext: string;
+  groupPasswordCiphertext?: string;
+  enabled: boolean;
+  cameraDeviceId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateVideoPairingInput = Pick<
+  VideoControlRecord,
+  "pairingId" | "group" | "user" | "pairingKeyCiphertext" | "groupPasswordCiphertext"
+>;
+
+export type SetVideoControlInput = {
+  group: string;
+  user: string;
+  enabled: boolean;
+  cameraDeviceId?: string | null;
+};
+
 export interface Store {
   init(): Promise<void>;
   getUserByUsername(username: string): Promise<UserRecord | undefined>;
@@ -55,6 +79,10 @@ export interface Store {
   listBans(): Promise<BanRecord[]>;
   createBan(input: CreateBanInput): Promise<BanRecord>;
   removeBans(request: RemoveBanRequest): Promise<BanRecord[]>;
+  listVideoControls(): Promise<VideoControlRecord[]>;
+  getVideoControl(group: string, user: string): Promise<VideoControlRecord | undefined>;
+  createVideoPairing(input: CreateVideoPairingInput): Promise<VideoControlRecord>;
+  setVideoControl(input: SetVideoControlInput): Promise<VideoControlRecord>;
   close(): Promise<void>;
 }
 
@@ -62,6 +90,7 @@ export class MemoryStore implements Store {
   private users = new Map<string, UserRecord>();
   private rooms = new Map<string, RoomRecord>();
   private bans = new Map<string, BanRecord>();
+  private videoControls = new Map<string, VideoControlRecord>();
 
   async init(): Promise<void> {}
 
@@ -149,6 +178,51 @@ export class MemoryStore implements Store {
     return removed;
   }
 
+  async listVideoControls(): Promise<VideoControlRecord[]> {
+    return [...this.videoControls.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getVideoControl(group: string, user: string): Promise<VideoControlRecord | undefined> {
+    return this.videoControls.get(videoControlKey(group, user));
+  }
+
+  async createVideoPairing(input: CreateVideoPairingInput): Promise<VideoControlRecord> {
+    const existing = await this.getVideoControl(input.group, input.user);
+    const now = new Date().toISOString();
+    const control: VideoControlRecord = {
+      ...input,
+      enabled: false,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    };
+    this.videoControls.set(videoControlKey(input.group, input.user), control);
+    return control;
+  }
+
+  async setVideoControl(input: SetVideoControlInput): Promise<VideoControlRecord> {
+    const key = videoControlKey(input.group, input.user);
+    const existing = this.videoControls.get(key);
+    if (!existing) {
+      throw new Error("Video client is not paired.");
+    }
+    const now = new Date().toISOString();
+    if (input.enabled) {
+      for (const [otherKey, control] of this.videoControls) {
+        if (otherKey !== key && control.group === input.group && control.enabled) {
+          this.videoControls.set(otherKey, { ...control, enabled: false, updatedAt: now });
+        }
+      }
+    }
+    const updated: VideoControlRecord = {
+      ...existing,
+      enabled: input.enabled,
+      cameraDeviceId: input.cameraDeviceId === undefined ? existing.cameraDeviceId : input.cameraDeviceId ?? undefined,
+      updatedAt: now
+    };
+    this.videoControls.set(key, updated);
+    return updated;
+  }
+
   async close(): Promise<void> {}
 
   private pruneExpiredBans(): void {
@@ -196,6 +270,30 @@ export class PostgresStore implements Store {
         expires_at timestamptz,
         created_at timestamptz not null default now()
       );
+
+      create table if not exists video_controls (
+        group_name text not null,
+        user_name text not null,
+        pairing_id uuid not null unique,
+        pairing_key_ciphertext text not null,
+        group_password_ciphertext text,
+        enabled boolean not null default false,
+        camera_device_id text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        primary key (group_name, user_name)
+      );
+
+      with ranked as (
+        select ctid, row_number() over (partition by group_name order by updated_at desc, user_name) as position
+        from video_controls where enabled = true
+      )
+      update video_controls set enabled = false where ctid in (select ctid from ranked where position > 1);
+
+      create unique index if not exists video_controls_one_enabled_per_group
+        on video_controls (group_name) where enabled = true;
+
+      alter table video_controls add column if not exists group_password_ciphertext text;
     `);
   }
 
@@ -279,6 +377,66 @@ export class PostgresStore implements Store {
     return bans;
   }
 
+  async listVideoControls(): Promise<VideoControlRecord[]> {
+    const result = await this.pool.query("select * from video_controls order by created_at asc");
+    return result.rows.map(mapVideoControl);
+  }
+
+  async getVideoControl(group: string, user: string): Promise<VideoControlRecord | undefined> {
+    const result = await this.pool.query("select * from video_controls where group_name = $1 and user_name = $2", [group, user]);
+    return result.rows[0] ? mapVideoControl(result.rows[0]) : undefined;
+  }
+
+  async createVideoPairing(input: CreateVideoPairingInput): Promise<VideoControlRecord> {
+    const result = await this.pool.query(
+      `insert into video_controls (group_name, user_name, pairing_id, pairing_key_ciphertext, group_password_ciphertext, enabled, camera_device_id)
+       values ($1, $2, $3, $4, $5, false, null)
+       on conflict (group_name, user_name) do update set
+         pairing_id = excluded.pairing_id,
+         pairing_key_ciphertext = excluded.pairing_key_ciphertext,
+         group_password_ciphertext = excluded.group_password_ciphertext,
+         enabled = false,
+         camera_device_id = null,
+         updated_at = now()
+       returning *`,
+      [input.group, input.user, input.pairingId, input.pairingKeyCiphertext, input.groupPasswordCiphertext]
+    );
+    return mapVideoControl(result.rows[0]);
+  }
+
+  async setVideoControl(input: SetVideoControlInput): Promise<VideoControlRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [input.group]);
+      if (input.enabled) {
+        await client.query(
+          "update video_controls set enabled = false, updated_at = now() where group_name = $1 and user_name <> $2 and enabled = true",
+          [input.group, input.user]
+        );
+      }
+      const result = await client.query(
+        `update video_controls set
+           enabled = $3,
+           camera_device_id = case when $4::boolean then $5 else camera_device_id end,
+           updated_at = now()
+         where group_name = $1 and user_name = $2
+         returning *`,
+        [input.group, input.user, input.enabled, input.cameraDeviceId !== undefined, input.cameraDeviceId ?? null]
+      );
+      if (!result.rows[0]) {
+        throw new Error("Video client is not paired.");
+      }
+      await client.query("commit");
+      return mapVideoControl(result.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
@@ -319,6 +477,24 @@ function mapBan(row: Record<string, unknown>): BanRecord {
     expiresAt: row.expires_at === null || row.expires_at === undefined ? null : new Date(String(row.expires_at)).toISOString(),
     createdAt: new Date(String(row.created_at)).toISOString()
   };
+}
+
+function mapVideoControl(row: Record<string, unknown>): VideoControlRecord {
+  return {
+    pairingId: String(row.pairing_id),
+    group: String(row.group_name),
+    user: String(row.user_name),
+    pairingKeyCiphertext: String(row.pairing_key_ciphertext),
+    groupPasswordCiphertext: optionalString(row.group_password_ciphertext),
+    enabled: Boolean(row.enabled),
+    cameraDeviceId: optionalString(row.camera_device_id),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at)).toISOString()
+  };
+}
+
+function videoControlKey(group: string, user: string): string {
+  return `${group}\u0000${user}`;
 }
 
 function parseBanType(type: string): BanType {

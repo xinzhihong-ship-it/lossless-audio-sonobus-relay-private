@@ -6,12 +6,14 @@
 #include <arpa/inet.h>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fcntl.h>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -113,6 +115,7 @@ std::atomic<bool> g_running{true};
 int32_t g_next_peer_id = 1000;
 uint64_t g_next_native_sequence = 0;
 uint64_t g_last_relay_heartbeat_ms = 0;
+bool g_raw_stdout = false;
 
 void enqueue_web_samples(const std::string& user_id, const std::vector<aoo_sample>& left, const std::vector<aoo_sample>& right, int count);
 int pop_web_mix_blocks(std::vector<WebMixBlock>& blocks, int max_blocks);
@@ -124,6 +127,13 @@ int env_int(const char *name, int fallback)
         return fallback;
     }
     return std::atoi(value);
+}
+
+bool env_bool(const char *name, bool fallback)
+{
+    const char *value = std::getenv(name);
+    if (!value || !*value) return fallback;
+    return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 || std::strcmp(value, "yes") == 0;
 }
 
 std::string env_string(const char *name, const char *fallback)
@@ -1110,15 +1120,45 @@ void enqueue_native_audio(Peer& peer, const std::vector<aoo_sample>& left, const
     }
 }
 
+void write_raw_mix(const std::vector<aoo_sample>& left, const std::vector<aoo_sample>& right, int mixed_blocks)
+{
+    if (!g_raw_stdout) return;
+    static std::vector<uint8_t> pcm(kBlockSize * kChannels * 2);
+    const float gain = mixed_blocks > 1 ? 1.0f / std::sqrt((float)mixed_blocks) : 1.0f;
+    for (int i = 0; i < kBlockSize; ++i) {
+        const float samples[kChannels] = {
+            std::max(-1.0f, std::min(1.0f, (float)left[i] * gain)),
+            std::max(-1.0f, std::min(1.0f, (float)right[i] * gain))
+        };
+        for (int channel = 0; channel < kChannels; ++channel) {
+            const int16_t sample = (int16_t)std::lrintf(samples[channel] * 32767.0f);
+            const size_t offset = (size_t)(i * kChannels + channel) * 2;
+            pcm[offset] = (uint8_t)(sample & 0xff);
+            pcm[offset + 1] = (uint8_t)((sample >> 8) & 0xff);
+        }
+    }
+    const auto written = write(STDOUT_FILENO, pcm.data(), pcm.size());
+    if (written < 0 && errno == EPIPE) {
+        g_running.store(false);
+        if (g_client) aoonet_client_quit(g_client);
+    }
+}
+
 void pump_thread()
 {
     std::vector<aoo_sample> sink_left(kBlockSize, 0.0f);
     std::vector<aoo_sample> sink_right(kBlockSize, 0.0f);
+    std::vector<aoo_sample> native_mix_left(kBlockSize, 0.0f);
+    std::vector<aoo_sample> native_mix_right(kBlockSize, 0.0f);
     std::vector<aoo_sample> web_mix_left(kBlockSize, 0.0f);
     std::vector<aoo_sample> web_mix_right(kBlockSize, 0.0f);
     std::vector<WebMixBlock> web_blocks;
     aoo_sample *sink_channels[kChannels] = { sink_left.data(), sink_right.data() };
+    const auto block_duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>((double)kBlockSize / (double)kSampleRate));
+    auto next_tick = std::chrono::steady_clock::now();
     while (g_running.load()) {
+        int native_mixed_blocks = 0;
         if (g_client) {
             aoonet_client_send(g_client);
             aoonet_client_handle_events(g_client, handle_client_events, nullptr);
@@ -1158,15 +1198,15 @@ void pump_thread()
                 const aoo_sample *web_channels[kChannels] = { web_mix_left.data(), web_mix_right.data() };
                 const auto sample_time = aoo_osctime_get();
                 for (auto& peer : g_peers) {
-                    if (!peer->source || !peer->connected || !peer->source_invited) {
-                        continue;
-                    }
+                    if (!peer->source || !peer->connected || !peer->source_invited) continue;
                     aoo_source_process(peer->source, web_channels, kBlockSize, sample_time);
                     peer->web_frames_in += 1;
                     std::lock_guard<std::mutex> state_lock(g_state_lock);
                     g_state.web_frames_out += 1;
                 }
             }
+            std::fill(native_mix_left.begin(), native_mix_left.end(), 0.0f);
+            std::fill(native_mix_right.begin(), native_mix_right.end(), 0.0f);
             for (auto& peer : g_peers) {
                 if (peer->source) {
                     aoo_source_send(peer->source);
@@ -1184,11 +1224,20 @@ void pump_thread()
                             g_state.native_frames_in += 1;
                         }
                         enqueue_native_audio(*peer, sink_left, sink_right);
+                        for (int i = 0; i < kBlockSize; ++i) {
+                            native_mix_left[i] += sink_left[i];
+                            native_mix_right[i] += sink_right[i];
+                        }
+                        native_mixed_blocks += 1;
                     }
                 }
             }
         }
-        usleep(10 * 1000);
+        write_raw_mix(native_mix_left, native_mix_right, native_mixed_blocks);
+        next_tick += block_duration;
+        const auto now = std::chrono::steady_clock::now();
+        if (next_tick < now - block_duration * 4) next_tick = now;
+        std::this_thread::sleep_until(next_tick);
     }
 }
 
@@ -1208,14 +1257,21 @@ int main()
     const auto username = env_string("BRIDGE_USERNAME", "web-bridge");
     const auto password = env_string("BRIDGE_PASSWORD", "");
     const auto group_password = env_string("BRIDGE_GROUP_PASSWORD", "");
+    g_raw_stdout = env_bool("BRIDGE_RAW_STDOUT", false);
     g_group = group;
     g_group_password = group_password;
     g_username = username;
     int connection_port = env_int("BRIDGE_CONNECTION_PORT", 10998);
     int udp_port = env_int("BRIDGE_UDP_PORT", 0);
-    int admin_port = env_int("BRIDGE_ADMIN_PORT", 18100);
+    int admin_port = env_int("BRIDGE_ADMIN_PORT", g_raw_stdout ? 0 : 18100);
     g_relay_host = env_string("BRIDGE_RELAY_HOST", "");
     g_relay_port = env_int("BRIDGE_RELAY_PORT", 0);
+    if (g_raw_stdout) {
+        std::cout.rdbuf(std::cerr.rdbuf());
+        const int flags = fcntl(STDOUT_FILENO, F_GETFL, 0);
+        if (flags >= 0) fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK);
+        std::signal(SIGPIPE, SIG_IGN);
+    }
 
     aoo_initialize();
 
@@ -1263,8 +1319,10 @@ int main()
     std::signal(SIGTERM, signal_handler);
     std::signal(SIGINT, signal_handler);
 
-    std::thread admin(admin_thread, admin_port);
-    admin.detach();
+    if (admin_port > 0) {
+        std::thread admin(admin_thread, admin_port);
+        admin.detach();
+    }
     std::thread udp_receiver(udp_receive_thread);
     udp_receiver.detach();
     std::thread pump(pump_thread);

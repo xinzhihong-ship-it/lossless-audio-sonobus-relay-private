@@ -87,19 +87,19 @@ docker compose up -d --build
 curl -i http://127.0.0.1:19090/health
 ```
 
-部署完成后，浏览器打开：
+部署完成后，公网 `19090` 只提供观看、Web 音频和健康检查。管理后台不暴露公网；在管理员电脑执行：
 
-```text
-http://<你的服务器IP或域名>:19090/admin
+```bash
+ssh -L 19094:127.0.0.1:19094 ubuntu@<你的服务器IP>
 ```
 
-重要：如果没有域名、没有备案、没有 HTTPS 证书，必须使用 `http://` 访问 Web 管理后台，不要使用 `https://`。部分浏览器会自动强制跳到 HTTPS，导致打不开页面；这种情况可以使用无痕模式访问，或换一个没有缓存过该地址的浏览器。
-
-没有域名时也不需要备案或 HTTPS，统一使用高位 HTTP 端口：
+再打开：
 
 ```text
-http://<你的服务器IP或域名>:19090/admin
+http://127.0.0.1:19094/admin
 ```
+
+不需要域名、备案或公网 HTTPS；不要在云安全组放行 `19094`。
 
 ## 客户端怎么填写
 
@@ -124,13 +124,13 @@ Relay Server（中继服务器）: <你的服务器IP或域名>:9000
 
 ## Web 管理后台能做什么
 
-Web 管理后台地址：
+管理后台只绑定服务器 `127.0.0.1:19094`，公网 `19090` 不提供 `/admin`。先建立 SSH 隧道：
 
-```text
-http://<你的服务器IP或域名>:19090/admin
+```bash
+ssh -L 19094:127.0.0.1:19094 ubuntu@<你的服务器IP>
 ```
 
-没有域名、备案和 HTTPS 证书时，请用上面的 `http://` 地址。浏览器如果自动跳到 `https://`，可以用无痕模式重新打开。
+然后在本机打开 `http://127.0.0.1:19094/admin`。
 
 功能：
 
@@ -145,19 +145,22 @@ http://<你的服务器IP或域名>:19090/admin
 
 - [docs/linux-admin.md](docs/linux-admin.md)
 
-## 自建视频中转
+## 自建 H.264 / WebRTC 视频中转
 
-视频完全由 SonoBus VST 自动发送，观看者只需打开网页；不依赖第三方视频服务。
+视频完全自建，不依赖 VDO.Ninja 或 JPEG/SBV1：安装包内的独立 FFmpeg helper 发布低延迟 H.264 到 MediaMTX；浏览器走 WebRTC/WHEP，OBS 使用真正的 RTSP Media Source。公共流同时包含 SonoBus 群组的 Opus 混音。
 
 ```text
-管理后台：  http://<你的服务器IP或域名>:19090/admin
-观看视频：  http://<你的服务器IP或域名>:19090/video/view?room=SB_<群组名>
+管理员：          http://127.0.0.1:19094/admin（仅 SSH 隧道）
+浏览器：          http://<服务器>:19090/SB_<群组名>
+OBS Media Source：rtsp://<服务器>:19092/SB_<群组名>
 ```
 
-- `19090/TCP`：管理后台、视频网页和信令。
-- `19091/UDP`：视频媒体。
-- `9000/UDP` 和 `10998/TCP+UDP`：原有音频 Relay/Connection Server。
-- VST 首次选择摄像头后会记住设备；设备拔出时自动回退。视频不采集音频。
+- `19090/TCP`：公开观看与 WebRTC/WHEP HTTP。
+- `19091/UDP`：WebRTC ICE 媒体。
+- `19092/TCP`：RTSP 发布和 OBS 读取。
+- 用户本机只做一次摄像头权限与配对；之后只有管理员能开关摄像头、选择设备。
+- 每组最多一路摄像头；helper 枚举实际模式并选择支持 60 FPS 的最高分辨率。
+- 摄像头 H.264 与群组 Opus 48 kHz 立体声混音共用稳定的 `SB_<群组>` 公共路径。
 
 详细说明见 [docs/video-relay.md](docs/video-relay.md)。
 

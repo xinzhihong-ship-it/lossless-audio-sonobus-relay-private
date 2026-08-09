@@ -5,6 +5,7 @@
 
 #include "SonobusPluginProcessor.h"
 #include "SonobusPluginEditor.h"
+#include "VideoPairingStore.h"
 
 #include "RunCumulantor.h"
 
@@ -966,7 +967,7 @@ void SonobusAudioProcessor::restartVideoSender()
         return;
 
     const auto joinedGroup = getCurrentJoinedGroup();
-    if (!mVideoLinkInfo.autoConnect || joinedGroup.isEmpty() || !mIsConnectedToServer || !mRelayServerEnabled)
+    if (joinedGroup.isEmpty() || !mIsConnectedToServer)
     {
         stopVideoSender();
         return;
@@ -976,7 +977,10 @@ void SonobusAudioProcessor::restartVideoSender()
     if (videoHost.isEmpty() && mServerEndpoint != nullptr)
         videoHost = mServerEndpoint->ipaddr;
 
-    mVideoRelayClient->start(videoHost, joinedGroup, mCurrentUsername, mVideoLinkInfo.cameraDevice);
+    MemoryBlock pairingKey;
+    VideoPairingStore::load(VideoPairingStore::account(videoHost, joinedGroup, mCurrentUsername),
+                            mVideoLinkInfo.pairingId, pairingKey);
+    mVideoRelayClient->start(videoHost, joinedGroup, mCurrentUsername, mVideoLinkInfo.pairingId, pairingKey);
 }
 
 void SonobusAudioProcessor::stopVideoSender()
@@ -993,6 +997,60 @@ String SonobusAudioProcessor::getVideoStatusText() const
 String SonobusAudioProcessor::getVideoCameraName() const
 {
     return mVideoRelayClient ? mVideoRelayClient->getActiveCamera() : String();
+}
+
+bool SonobusAudioProcessor::setVideoPairingText(const String& text, String& error)
+{
+    const auto joinedGroup = getCurrentJoinedGroup();
+    auto videoHost = mRelayServerHost;
+    if (videoHost.isEmpty() && mServerEndpoint != nullptr)
+        videoHost = mServerEndpoint->ipaddr;
+    if (joinedGroup.isEmpty() || videoHost.isEmpty() || mCurrentUsername.isEmpty())
+    {
+        error = TRANS("请先加入 SonoBus 群组再保存摄像头配对信息");
+        return false;
+    }
+
+    String pairingId;
+    MemoryBlock pairingKey;
+    if (!VideoRelayClient::parsePairingText(text, pairingId, pairingKey))
+    {
+        error = TRANS("摄像头配对信息格式无效");
+        return false;
+    }
+
+    const auto account = VideoPairingStore::account(videoHost, joinedGroup, mCurrentUsername);
+    const auto previousPairingId = mVideoLinkInfo.pairingId;
+    if (!VideoPairingStore::save(account, pairingId, pairingKey, error))
+        return false;
+
+    mVideoLinkInfo.pairingId = pairingId;
+    if (previousPairingId.isNotEmpty() && previousPairingId != pairingId)
+        VideoPairingStore::remove(account, previousPairingId);
+    restartVideoSender();
+    return true;
+}
+
+void SonobusAudioProcessor::clearVideoPairing()
+{
+    auto videoHost = mRelayServerHost;
+    if (videoHost.isEmpty() && mServerEndpoint != nullptr)
+        videoHost = mServerEndpoint->ipaddr;
+    VideoPairingStore::remove(VideoPairingStore::account(videoHost, getCurrentJoinedGroup(), mCurrentUsername),
+                              mVideoLinkInfo.pairingId);
+    mVideoLinkInfo.pairingId.clear();
+    stopVideoSender();
+}
+
+bool SonobusAudioProcessor::hasVideoPairing() const
+{
+    if (mVideoLinkInfo.pairingId.isEmpty()) return false;
+    auto videoHost = mRelayServerHost;
+    if (videoHost.isEmpty() && mServerEndpoint != nullptr)
+        videoHost = mServerEndpoint->ipaddr;
+    MemoryBlock key;
+    return VideoPairingStore::load(VideoPairingStore::account(videoHost, getCurrentJoinedGroup(), mCurrentUsername),
+                                   mVideoLinkInfo.pairingId, key);
 }
 
 
@@ -8889,8 +8947,7 @@ static String videoLinkBeDirectorKey("beDir");
 static String videoLinkLargeShareKey("largeShare");
 static String videoLinkPushViewModeKey("pushViewMode");
 static String videoLinkScreenShareParamsKey("screenShare");
-static String videoAutoConnectKey("autoConnect");
-static String videoCameraDeviceKey("cameraDevice");
+static String videoPairingIdKey("pairingId");
 
 ValueTree SonobusAudioProcessor::VideoLinkInfo::getValueTree() const
 {
@@ -8903,8 +8960,7 @@ ValueTree SonobusAudioProcessor::VideoLinkInfo::getValueTree() const
     item.setProperty(videoLinkBeDirectorKey, beDirector, nullptr);
     item.setProperty(videoLinkLargeShareKey, largeShare, nullptr);
     item.setProperty(videoLinkPushViewModeKey, pushViewMode, nullptr);
-    item.setProperty(videoAutoConnectKey, autoConnect, nullptr);
-    item.setProperty(videoCameraDeviceKey, cameraDevice, nullptr);
+    item.setProperty(videoPairingIdKey, pairingId, nullptr);
 
     return item;
 }
@@ -8918,8 +8974,7 @@ void SonobusAudioProcessor::VideoLinkInfo::setFromValueTree(const ValueTree & it
     beDirector = item.getProperty(videoLinkBeDirectorKey, beDirector);
     largeShare = item.getProperty(videoLinkLargeShareKey, largeShare);
     pushViewMode = item.getProperty(videoLinkPushViewModeKey, pushViewMode);
-    autoConnect = item.getProperty(videoAutoConnectKey, autoConnect);
-    cameraDevice = item.getProperty(videoCameraDeviceKey, cameraDevice);
+    pairingId = item.getProperty(videoPairingIdKey, pairingId);
 }
 
 

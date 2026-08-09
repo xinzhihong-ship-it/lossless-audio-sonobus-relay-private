@@ -1,24 +1,8 @@
-FROM debian:bookworm-slim AS build
-RUN printf '%s\n' \
-  'Types: deb' \
-  'URIs: http://mirrors.tencent.com/debian' \
-  'Suites: bookworm bookworm-updates' \
-  'Components: main' \
-  'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
-  '' \
-  'Types: deb' \
-  'URIs: http://mirrors.tencent.com/debian-security' \
-  'Suites: bookworm-security' \
-  'Components: main' \
-  'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
-  > /etc/apt/sources.list.d/debian.sources
+FROM gcc:14-bookworm AS build
 WORKDIR /src
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends g++ ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
 COPY sonobus/deps/aoo ./sonobus/deps/aoo
 COPY tools/connection-server ./tools/connection-server
-RUN g++ -std=c++17 -O2 -pthread \
+RUN g++ -std=c++17 -O2 -pthread -static-libstdc++ -static-libgcc \
   -Isonobus/deps/aoo/lib \
   -Isonobus/deps/aoo/lib/src \
   -Isonobus/deps/aoo/deps \

@@ -1834,135 +1834,60 @@ function encodeSbr1(header: Record<string, unknown>, payload: Buffer, type = 1):
   return packet;
 }
 
-test("video presence exposes browser and OBS low-latency viewer actions", async () => {
-  const app = await createApp({
-    jwtSecret: "test-secret",
-    adminUsername: "admin",
-    adminPassword: "admin-pass",
-    maxBytesPerSecondPerClient: 1024 * 1024
-  });
-  await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
-  const address = app.server.address();
-  assert(address && typeof address === "object");
-  const baseUrl = `http://127.0.0.1:${address.port}`;
-
-  try {
-    const presence = await postJson<{ sessionId: string; videoRoom: string }>(baseUrl, "/video/presence", {
-      group: "studio",
-      user: "alice",
-      camera: "FaceTime HD Camera"
-    });
-    assert.ok(presence.sessionId);
-    assert.equal(presence.videoRoom, "SB_studio");
-
-    const adminToken = await login(baseUrl, "admin", "admin-pass");
-    const response = await get<{ connections: Array<{ type: string; videoRoom?: string; online?: boolean }> }>(baseUrl, "/admin/connections", adminToken);
-    const video = response.connections.find((connection) => connection.type === "video-publisher");
-    assert.equal(video?.videoRoom, "SB_studio");
-    assert.equal(video?.online, true);
-
-    const html = await (await fetch(`${baseUrl}/admin`)).text();
-    assert.match(html, /打开视频/);
-    assert.match(html, /复制 OBS 地址/);
-    assert.match(html, /url\.searchParams\.set\("obs", "1"\)/);
-
-    const viewerHtml = await (await fetch(`${baseUrl}/video/view?room=SB_studio&obs=1`)).text();
-    assert.match(viewerHtml, /pendingFrame/);
-    assert.match(viewerHtml, /renderLatestFrame/);
-    assert.match(viewerHtml, /document\.documentElement\.classList\.add\("obs"\)/);
-  } finally {
-    await app.close();
-  }
-});
-
-test("video viewer receives publisher binary frames", async () => {
-  const app = await createApp({
-    jwtSecret: "test-secret",
-    adminUsername: "admin",
-    adminPassword: "admin-pass",
-    maxBytesPerSecondPerClient: 1024 * 1024
-  });
-  await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
-  const address = app.server.address();
-  assert(address && typeof address === "object");
-  const baseUrl = `http://127.0.0.1:${address.port}`;
-  const wsUrl = baseUrl.replace("http", "ws");
-  const viewer = new WebSocket(`${wsUrl}/video/view?room=SB_studio&user=viewer`);
-  const publisher = new WebSocket(`${wsUrl}/video/publish?room=SB_studio&user=alice&camera=Camera%20A`);
-
-  try {
-    await Promise.all([once(viewer, "open"), once(publisher, "open")]);
-    const frame = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
-    const received = onceBinaryMessage(viewer);
-    publisher.send(frame, { binary: true });
-    assert.deepEqual(await received, frame);
-    const adminToken = await login(baseUrl, "admin", "admin-pass");
-    const response = await get<{ connections: Array<{ type: string; camera?: string }> }>(baseUrl, "/admin/connections", adminToken);
-    assert.equal(response.connections.find((connection) => connection.type === "video-publisher")?.camera, "Camera A");
-  } finally {
-    viewer.close();
-    publisher.close();
-    await app.close();
-  }
-});
-
-test("video UDP media chunks are reassembled and relayed to browser viewers", async () => {
-  const probe = dgram.createSocket("udp4");
-  await new Promise<void>((resolve) => probe.bind(0, "127.0.0.1", resolve));
-  const probeAddress = probe.address();
-  assert(probeAddress && typeof probeAddress === "object");
-  const mediaPort = probeAddress.port;
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-
+test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs", async () => {
   const app = await createApp({
     jwtSecret: "test-secret",
     adminUsername: "admin",
     adminPassword: "admin-pass",
     maxBytesPerSecondPerClient: 1024 * 1024,
-    videoMediaPort: mediaPort
+    publicVideoHost: "video.example.test",
+    publicHttpPort: 19090,
+    videoRtspPort: 19092,
+    mediaMuxerUsername: "media-muxer",
+    mediaMuxerPassword: "muxer-secret",
+    mediaMtxAdmin: {
+      async paths() {
+        return [{ name: "SB_studio", ready: true, tracks2: [{ codec: "H264", codecProps: { width: 1920, height: 1080 } }, { codec: "Opus" }] }];
+      }
+    }
   });
   await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const address = app.server.address();
   assert(address && typeof address === "object");
-  const wsUrl = `ws://127.0.0.1:${address.port}`;
-  const viewer = new WebSocket(`${wsUrl}/video/view?room=SB_studio&user=viewer`);
-  const publisher = new WebSocket(`${wsUrl}/video/publish?room=SB_studio&user=alice`);
-  const udp = dgram.createSocket("udp4");
-  await new Promise<void>((resolve) => udp.bind(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${address.port}`;
 
   try {
-    await Promise.all([once(viewer, "open"), once(publisher, "open")]);
-    const frame = Buffer.from([0xff, 0xd8, 0x01, 0x02, 0xff, 0xd9]);
-    const received = onceBinaryMessage(viewer);
-    await sendUdp(udp, makeVideoMediaPacket("SB_studio", "alice", 7, 1, 2, frame.subarray(3)), mediaPort);
-    await sendUdp(udp, makeVideoMediaPacket("SB_studio", "alice", 7, 0, 2, frame.subarray(0, 3)), mediaPort);
-    assert.deepEqual(await received, frame);
+    const redirect = await fetch(`${baseUrl}/video/view?room=SB_studio`, { redirect: "manual" });
+    assert.equal(redirect.status, 302);
+    assert.equal(redirect.headers.get("location"), "/SB_studio");
+
+
+    const adminToken = await login(baseUrl, "admin", "admin-pass");
+    const pairing = await post<{ pairingId: string; pairingCode: string }>(baseUrl, "/admin/video/pair", adminToken, {
+      group: "studio",
+      user: "alice"
+    });
+    assert.ok(pairing.pairingId);
+    assert.ok(pairing.pairingCode);
+
+    await post(baseUrl, "/admin/video/control", adminToken, { group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a" });
+    const response = await get<{
+      videoControls: Array<{ group: string; user: string; enabled: boolean; cameraDeviceId?: string }>;
+      videoPaths: Array<{ name: string }>;
+      videoUrls: { browserBase: string; rtspBase: string };
+    }>(baseUrl, "/admin/connections", adminToken);
+    assert.equal(response.videoControls[0]?.enabled, true);
+    assert.equal(response.videoControls[0]?.cameraDeviceId, "camera-a");
+    assert.equal(response.videoPaths[0]?.name, "SB_studio");
+    assert.equal(response.videoUrls.browserBase, "http://video.example.test:19090");
+    assert.equal(response.videoUrls.rtspBase, "rtsp://video.example.test:19092");
+
+    const html = await (await fetch(`${baseUrl}/admin`)).text();
+    assert.match(html, /配对摄像头/);
+    assert.match(html, /自动选择最高 60 FPS/);
+    assert.match(html, /OBS 媒体源 RTSP/);
+    assert.doesNotMatch(html, /SBV1|pendingFrame|JPEG/);
   } finally {
-    viewer.close();
-    publisher.close();
-    await new Promise<void>((resolve) => udp.close(() => resolve()));
     await app.close();
   }
 });
-
-function makeVideoMediaPacket(room: string, user: string, frameId: number, chunkIndex: number, chunkCount: number, payload: Buffer): Buffer {
-  const roomBytes = Buffer.from(room);
-  const userBytes = Buffer.from(user);
-  const packet = Buffer.alloc(14 + roomBytes.length + userBytes.length + payload.length);
-  packet.write("SBV1", 0, "ascii");
-  packet[4] = roomBytes.length;
-  packet[5] = userBytes.length;
-  packet.writeUInt32BE(frameId, 6);
-  packet.writeUInt16BE(chunkIndex, 10);
-  packet.writeUInt16BE(chunkCount, 12);
-  roomBytes.copy(packet, 14);
-  userBytes.copy(packet, 14 + roomBytes.length);
-  payload.copy(packet, 14 + roomBytes.length + userBytes.length);
-  return packet;
-}
-
-function sendUdp(socket: dgram.Socket, packet: Buffer, port: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    socket.send(packet, port, "127.0.0.1", (error) => error ? reject(error) : resolve());
-  });
-}

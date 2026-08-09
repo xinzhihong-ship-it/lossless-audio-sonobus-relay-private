@@ -18,6 +18,7 @@ endif()
 # If we are compiling for Mac OS we want to target OS versions down to 10.9
 option(UniversalBinary "Build universal binary for mac" ON)
 option(SONOBUS_ENABLE_ASIO "Enable ASIO support on Windows. Requires Steinberg ASIO SDK at ../asiosdk/common." ON)
+set(SONOBUS_FFMPEG_PATH "" CACHE FILEPATH "Bundled FFmpeg executable for H.264 camera publishing")
 
 if (APPLE)
     set (CMAKE_OSX_DEPLOYMENT_TARGET "10.10" CACHE INTERNAL "")
@@ -174,7 +175,7 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
 	
         # mac settings
         HARDENED_RUNTIME_ENABLED TRUE
-        HARDENED_RUNTIME_OPTIONS "com.apple.security.device.audio-input"
+        HARDENED_RUNTIME_OPTIONS "com.apple.security.device.audio-input;com.apple.security.device.camera"
         PLIST_TO_MERGE "${MacPList}"
         AU_MAIN_TYPE "kAudioUnitType_MusicEffect"
         
@@ -342,6 +343,8 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         Source/VideoRelayView.h
         Source/VideoRelayClient.cpp
         Source/VideoRelayClient.h
+        Source/VideoPairingStore.cpp
+        Source/VideoPairingStore.h
         Source/VersionInfo.cpp
         Source/VersionInfo.h
         Source/WaveformTransportComponent.h
@@ -451,6 +454,30 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
                 XCODE_GENERATE_SCHEME ON)
         endif()
     endforeach()
+
+    if(SONOBUS_FFMPEG_PATH AND EXISTS "${SONOBUS_FFMPEG_PATH}")
+        get_filename_component(SONOBUS_FFMPEG_NAME "${SONOBUS_FFMPEG_PATH}" NAME)
+        foreach(format_target ${formats})
+            if(TARGET ${target_name}_${format_target})
+                if(APPLE)
+                    set(VIDEO_HELPER_DIR "$<TARGET_FILE_DIR:${target_name}_${format_target}>/../Helpers/SonoBusVideoHelper.app/Contents")
+                    add_custom_command(TARGET ${target_name}_${format_target} POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E make_directory "${VIDEO_HELPER_DIR}/MacOS"
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${SONOBUS_FFMPEG_PATH}" "${VIDEO_HELPER_DIR}/MacOS/ffmpeg"
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/SonoBusVideoHelper-Info.plist" "${VIDEO_HELPER_DIR}/Info.plist"
+                        COMMENT "Bundling crash-isolated FFmpeg camera helper")
+                else()
+                    add_custom_command(TARGET ${target_name}_${format_target} POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${SONOBUS_FFMPEG_PATH}"
+                            "$<TARGET_FILE_DIR:${target_name}_${format_target}>/${SONOBUS_FFMPEG_NAME}"
+                        COMMENT "Bundling FFmpeg H.264 camera runtime")
+                endif()
+            endif()
+        endforeach()
+    endif()
     
     
     target_compile_definitions("${target_name}"
@@ -636,6 +663,13 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
             juce::juce_recommended_lto_flags
         #   juce::juce_recommended_warning_flags
         )
+
+    if(APPLE)
+        find_library(SECURITY_FRAMEWORK Security)
+        target_link_libraries("${target_name}" PRIVATE ${SECURITY_FRAMEWORK})
+    elseif(WIN32)
+        target_link_libraries("${target_name}" PRIVATE Advapi32)
+    endif()
             
 endfunction()
 

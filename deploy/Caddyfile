@@ -1,8 +1,28 @@
 {$PUBLIC_DOMAIN} {
   encode zstd gzip
+  route {
+    @video path_regexp video ^/SB_[^/]+(?:/.*)?$
+    reverse_proxy @video mediamtx:8889
 
-  reverse_proxy server:8080 {
-    header_up X-Forwarded-Proto {scheme}
-    header_up X-Forwarded-Host {host}
+    @admin path /admin /admin/*
+    respond @admin 404
+
+    reverse_proxy server:8080 {
+      header_up X-Forwarded-Proto {scheme}
+      header_up X-Forwarded-Host {host}
+    }
+  }
+}
+
+:8081 {
+  encode zstd gzip
+  route {
+    @video path_regexp video ^/SB_[^/]+(?:/.*)?$
+    reverse_proxy @video mediamtx:8889
+
+    reverse_proxy server:8080 {
+      header_up X-Forwarded-Proto {scheme}
+      header_up X-Forwarded-Host {host}
+    }
   }
 }

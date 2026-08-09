@@ -61,6 +61,8 @@ cp -p "${ROOT}/LICENSE_EXCEPTION" "${WORK}/docs/lossless-audio-sonobus-relay/"
 cp -p "${ROOT}/NOTICE.md" "${WORK}/docs/lossless-audio-sonobus-relay/"
 cp -p "${ROOT}/sonobus/LICENSE" "${WORK}/docs/lossless-audio-sonobus-relay/sonobus-LICENSE"
 cp -p "${ROOT}/sonobus/LICENSE_EXCEPTION" "${WORK}/docs/lossless-audio-sonobus-relay/sonobus-LICENSE_EXCEPTION"
+cp -p "${ROOT}/artifacts/ffmpeg-macos-universal/ffmpeg-LICENSE-LGPL-2.1" "${WORK}/docs/lossless-audio-sonobus-relay/"
+cp -p "${ROOT}/docs/ffmpeg-runtime.md" "${WORK}/docs/lossless-audio-sonobus-relay/ffmpeg-RUNTIME.md"
 stage_component "docs" "com.losslessaudio.sonobusrelay.docs" "${WORK}/docs" "/usr/local/share/doc"
 
 SYNTHESIZE_ARGS=()

@@ -35,12 +35,16 @@ Name: "vst3"; Description: "VST3 plugins"; Types: full custom
 
 [Files]
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBus.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\README.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion isreadme
 Source: "{#SourceRoot}\installer-input\SonoBus\LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\LICENSE_EXCEPTION"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\NOTICE.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\sonobus-LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\sonobus-LICENSE_EXCEPTION"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-RUNTIME.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBus.vst3\*"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusInstrument.vst3\*"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>SonoBus Video Helper</string>
+  <key>CFBundleExecutable</key>
+  <string>ffmpeg</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.Sonosaurus.SonoBus.VideoHelper</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>SonoBus Video Helper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
+  <key>NSCameraUsageDescription</key>
+  <string>SonoBus uses the selected camera only when the server administrator enables video for this group.</string>
+  <key>NSCameraUseContinuityCameraDeviceType</key>
+  <true/>
+</dict>
+</plist>

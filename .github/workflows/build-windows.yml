@@ -31,6 +31,26 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Download pinned FFmpeg runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "7.1.1"
+          $expected = "04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4"
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-$version-windows.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "ffmpeg-$version-windows"
+          Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/$version/ffmpeg-$version-essentials_build.zip" -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "FFmpeg archive checksum mismatch: $actual" }
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+          $ffmpeg = Get-ChildItem -Path $extract -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
+          $license = Get-ChildItem -Path $extract -Filter LICENSE -File -Recurse | Select-Object -First 1
+          $readme = Get-ChildItem -Path $extract -Filter README.txt -File -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg -or $null -eq $license -or $null -eq $readme) { throw "FFmpeg runtime archive is incomplete." }
+          "SONOBUS_FFMPEG_PATH=$($ffmpeg.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SONOBUS_FFMPEG_LICENSE=$($license.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SONOBUS_FFMPEG_README=$($readme.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Configure
         shell: pwsh
         working-directory: sonobus
@@ -39,12 +59,27 @@ jobs:
           -G "Visual Studio 17 2022"
           -A x64
           -DSONOBUS_ENABLE_ASIO=OFF
+          -DSONOBUS_FFMPEG_PATH="$env:SONOBUS_FFMPEG_PATH"
           -B build
 
       - name: Build
         shell: pwsh
         working-directory: sonobus
         run: cmake --build build --config Release --parallel
+
+      - name: Verify bundled FFmpeg runtimes
+        shell: pwsh
+        run: |
+          $sourceHash = (Get-FileHash -Algorithm SHA256 $env:SONOBUS_FFMPEG_PATH).Hash
+          $runtimes = @(
+            "sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg.exe",
+            "sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3/Contents/x86_64-win/ffmpeg.exe",
+            "sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3/Contents/x86_64-win/ffmpeg.exe"
+          )
+          foreach ($runtime in $runtimes) {
+            if (-not (Test-Path $runtime)) { throw "Missing bundled runtime: $runtime" }
+            if ((Get-FileHash -Algorithm SHA256 $runtime).Hash -ne $sourceHash) { throw "Bundled runtime checksum mismatch: $runtime" }
+          }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -57,6 +92,10 @@ jobs:
           Copy-Item -Recurse -Force sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBus.exe artifacts/windows-x64/
           Copy-Item -Recurse -Force sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3 artifacts/windows-x64/
           Copy-Item -Recurse -Force sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3 artifacts/windows-x64/
+          Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg.exe artifacts/windows-x64/
+          Copy-Item -Force $env:SONOBUS_FFMPEG_LICENSE artifacts/windows-x64/ffmpeg-LICENSE
+          Copy-Item -Force $env:SONOBUS_FFMPEG_README artifacts/windows-x64/ffmpeg-README.txt
+          Copy-Item -Force docs/ffmpeg-runtime.md artifacts/windows-x64/ffmpeg-RUNTIME.md
           Copy-Item -Force README.md,LICENSE,LICENSE_EXCEPTION,NOTICE.md artifacts/windows-x64/
           Copy-Item -Force sonobus/LICENSE artifacts/windows-x64/sonobus-LICENSE
           Copy-Item -Force sonobus/LICENSE_EXCEPTION artifacts/windows-x64/sonobus-LICENSE_EXCEPTION

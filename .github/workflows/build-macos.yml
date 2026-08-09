@@ -31,12 +31,18 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Build pinned universal FFmpeg runtime
+        run: |
+          chmod +x tools/macos/build-ffmpeg-video.sh
+          tools/macos/build-ffmpeg-video.sh artifacts/ffmpeg-macos-universal
+
       - name: Configure
         working-directory: sonobus
         run: |
           cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DUniversalBinary=ON \
+            -DSONOBUS_FFMPEG_PATH="${GITHUB_WORKSPACE}/artifacts/ffmpeg-macos-universal/ffmpeg" \
             -B build
 
       - name: Build
@@ -45,6 +51,22 @@ jobs:
 
       - name: Fix macOS bundle identity
         run: tools/fix-macos-sonobus-bundles.sh sonobus
+
+      - name: Verify bundled FFmpeg runtimes
+        run: |
+          for runtime in \
+            sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBus.app/Contents/Helpers/SonoBusVideoHelper.app/Contents/MacOS/ffmpeg \
+            sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3/Contents/Helpers/SonoBusVideoHelper.app/Contents/MacOS/ffmpeg \
+            sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3/Contents/Helpers/SonoBusVideoHelper.app/Contents/MacOS/ffmpeg \
+            sonobus/build/SonoBus_artefacts/Release/AU/SonoBus.component/Contents/Helpers/SonoBusVideoHelper.app/Contents/MacOS/ffmpeg
+          do
+            test -x "$runtime"
+            archs="$(lipo -archs "$runtime")"
+            [[ " $archs " == *" x86_64 "* && " $archs " == *" arm64 "* ]]
+            helper_app="$(dirname "$(dirname "$(dirname "$runtime")")")"
+            codesign --verify --strict "$helper_app"
+            codesign -d --entitlements :- "$helper_app" 2>&1 | grep -q com.apple.security.device.camera
+          done
 
       - name: Collect artifacts
         run: |
@@ -61,6 +83,8 @@ jobs:
           cp -p README.md LICENSE LICENSE_EXCEPTION NOTICE.md artifacts/macos-universal/
           cp -p sonobus/LICENSE artifacts/macos-universal/sonobus-LICENSE
           cp -p sonobus/LICENSE_EXCEPTION artifacts/macos-universal/sonobus-LICENSE_EXCEPTION
+          cp -p artifacts/ffmpeg-macos-universal/ffmpeg-LICENSE-LGPL-2.1 artifacts/macos-universal/
+          cp -p docs/ffmpeg-runtime.md artifacts/macos-universal/ffmpeg-RUNTIME.md
           ditto -c -k --sequesterRsrc --keepParent artifacts/macos-universal sonobus-macos-universal.zip
 
       - name: Build pkg installer

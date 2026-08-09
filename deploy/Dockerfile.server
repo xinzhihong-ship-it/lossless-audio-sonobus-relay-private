@@ -5,13 +5,42 @@ COPY packages ./packages
 RUN npm install
 RUN npm run build
 
-FROM node:22-bookworm-slim AS runtime
+FROM alpine:3.22 AS bridge-build
+RUN apk add --no-cache g++
+WORKDIR /src
+COPY sonobus/deps/aoo ./sonobus/deps/aoo
+COPY tools/web-bridge ./tools/web-bridge
+RUN g++ -std=c++17 -O2 -pthread \
+  -Isonobus/deps/aoo/lib \
+  -Isonobus/deps/aoo/lib/src \
+  -Isonobus/deps/aoo/deps \
+  tools/web-bridge/main.cpp \
+  sonobus/deps/aoo/lib/src/client.cpp \
+  sonobus/deps/aoo/lib/src/common.cpp \
+  sonobus/deps/aoo/lib/src/net_utils.cpp \
+  sonobus/deps/aoo/lib/src/time.cpp \
+  sonobus/deps/aoo/lib/src/sync.cpp \
+  sonobus/deps/aoo/lib/src/source.cpp \
+  sonobus/deps/aoo/lib/src/sink.cpp \
+  sonobus/deps/aoo/lib/src/codec_pcm.cpp \
+  -x c++ sonobus/deps/aoo/deps/md5/md5.c -x none \
+  sonobus/deps/aoo/deps/oscpack/osc/OscOutboundPacketStream.cpp \
+  sonobus/deps/aoo/deps/oscpack/osc/OscPrintReceivedElements.cpp \
+  sonobus/deps/aoo/deps/oscpack/osc/OscReceivedElements.cpp \
+  sonobus/deps/aoo/deps/oscpack/osc/OscTypes.cpp \
+  -o /usr/local/bin/sonobus-web-bridge
+
+FROM node:22-alpine3.22 AS runtime
+RUN apk add --no-cache ffmpeg libstdc++
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+  VIDEO_BRIDGE_BINARY=/usr/local/bin/sonobus-web-bridge \
+  FFMPEG_BINARY=/usr/bin/ffmpeg
 COPY package.json package-lock.json* ./
 COPY packages ./packages
 COPY --from=build /app/packages/protocol/dist ./packages/protocol/dist
 COPY --from=build /app/packages/server/dist ./packages/server/dist
+COPY --from=bridge-build /usr/local/bin/sonobus-web-bridge /usr/local/bin/sonobus-web-bridge
 RUN npm install --omit=dev
 EXPOSE 8080
 CMD ["npm", "run", "start", "-w", "@lossless-audio/server"]

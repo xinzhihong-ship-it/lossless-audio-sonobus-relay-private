@@ -9,6 +9,20 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.0-ffmpeg
+    restart: unless-stopped
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: ${PUBLIC_VIDEO_HOST}
+      MTX_WEBRTCLOCALUDPADDRESS: ":${VIDEO_WEBRTC_PORT:-19091}"
+      MTX_AUTHINTERNALUSERS_0_USER: ${MEDIA_MTX_API_USERNAME:-media-api}
+      MTX_AUTHINTERNALUSERS_0_PASS: ${MEDIA_MTX_API_PASSWORD}
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "${VIDEO_RTSP_PORT:-19092}:8554/tcp"
+      - "${VIDEO_WEBRTC_PORT:-19091}:${VIDEO_WEBRTC_PORT:-19091}/udp"
+
   server:
     build:
       context: ..
@@ -22,15 +36,22 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-lossless_audio}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lossless_audio}
       MAX_BYTES_PER_SECOND_PER_CLIENT: ${MAX_BYTES_PER_SECOND_PER_CLIENT:-52428800}
       UDP_RELAY_PORT: ${UDP_RELAY_PORT:-9000}
-      VIDEO_MEDIA_PORT: ${VIDEO_MEDIA_PORT:-19091}
       CONNECTION_SERVER_ADMIN_URL: http://connection-server:18098
       WEB_BRIDGE_ADMIN_URL: http://web-bridge:18100
+      PUBLIC_VIDEO_HOST: ${PUBLIC_VIDEO_HOST}
+      PUBLIC_HTTP_PORT: ${PUBLIC_HTTP_PORT:-19090}
+      MEDIA_MTX_ADMIN_URL: http://mediamtx:9997
+      MEDIA_MTX_API_USERNAME: ${MEDIA_MTX_API_USERNAME:-media-api}
+      MEDIA_MTX_API_PASSWORD: ${MEDIA_MTX_API_PASSWORD}
+      VIDEO_RTSP_PORT: ${VIDEO_RTSP_PORT:-19092}
+      MEDIA_MUXER_USERNAME: ${MEDIA_MUXER_USERNAME:-media-muxer}
+      MEDIA_MUXER_PASSWORD: ${MEDIA_MUXER_PASSWORD}
     ports:
       - "${UDP_RELAY_PORT:-9000}:${UDP_RELAY_PORT:-9000}/udp"
-      - "${VIDEO_MEDIA_PORT:-19091}:${VIDEO_MEDIA_PORT:-19091}/udp"
     depends_on:
       - postgres
       - connection-server
+      - mediamtx
 
   connection-server:
     build:
@@ -67,6 +88,7 @@ services:
     restart: unless-stopped
     ports:
       - "${PUBLIC_HTTP_PORT:-19090}:80"
+      - "127.0.0.1:${ADMIN_HTTP_PORT:-19094}:8081"
     environment:
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN}
     volumes:
@@ -75,6 +97,7 @@ services:
       - caddy-config:/config
     depends_on:
       - server
+      - mediamtx
 
 volumes:
   postgres-data:

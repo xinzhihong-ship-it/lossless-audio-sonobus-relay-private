@@ -5,11 +5,12 @@ import { WebSocketServer } from "ws";
 import { encodeAudioFrame, type AudioFrameHeader } from "@lossless-audio/protocol";
 import { signToken, verifyPassword, verifyToken, type TokenClaims } from "./auth.js";
 import { HttpConnectionServerAdmin, type ConnectionServerAdmin, type ConnectionServerConnection } from "./connectionServerAdmin.js";
+import { GroupMediaManager, type GroupMediaManagerConfig } from "./groupMediaManager.js";
 import { RoomHub, type WebSocketConnection } from "./roomHub.js";
+import { HttpMediaMtxAdmin, videoRoom, type MediaMtxAdmin } from "./mediaMtx.js";
 import { MemoryStore, PostgresStore, type BanRecord, type BanType, type Store } from "./store.js";
 import { UdpRelay, type UdpRelayConnection } from "./udpRelay.js";
-import { VideoPresenceRegistry, type VideoPresenceConnection, type VideoPresenceKind } from "./videoPresence.js";
-import { VideoRelayHub } from "./videoRelay.js";
+import { VideoControlService } from "./videoControl.js";
 
 export type ServerConfig = {
   jwtSecret: string;
@@ -21,10 +22,18 @@ export type ServerConfig = {
   udpRawPeerTtlMs?: number;
   connectionServerAdminUrl?: string;
   webBridgeAdminUrl?: string;
+  publicVideoHost?: string;
+  publicHttpPort?: number;
+  mediaMtxAdminUrl?: string;
+  mediaMtxApiUsername?: string;
+  mediaMtxApiPassword?: string;
+  videoRtspPort?: number;
+  mediaMuxerUsername?: string;
+  mediaMuxerPassword?: string;
+  groupMediaManagerConfig?: GroupMediaManagerConfig;
   connectionServer?: ConnectionServerAdmin;
+  mediaMtxAdmin?: MediaMtxAdmin;
   store?: Store;
-  videoPresenceOnlineTtlMs?: number;
-  videoMediaPort?: number;
 };
 
 export type App = {
@@ -38,7 +47,7 @@ type BridgeGroupCache = {
   expiresAt: number;
 };
 
-type AdminConnection = WebSocketConnection | UdpRelayConnection | ConnectionServerConnection | VideoPresenceConnection;
+type AdminConnection = WebSocketConnection | UdpRelayConnection | ConnectionServerConnection;
 type MergedSonoBusConnection = ConnectionServerConnection & {
   type: "sonobus-connection";
   hasRelay?: boolean;
@@ -70,14 +79,30 @@ export async function createApp(config: ServerConfig): Promise<App> {
   });
   const udpRelay = config.udpRelayPort === undefined ? undefined : new UdpRelay(config.udpRelayPort, config.udpRawPeerTtlMs);
   const connectionServer = config.connectionServer ?? (config.connectionServerAdminUrl ? new HttpConnectionServerAdmin(config.connectionServerAdminUrl) : undefined);
-  const videoPresence = new VideoPresenceRegistry(config.videoPresenceOnlineTtlMs);
-  const videoRelay = new VideoRelayHub(videoPresence, config.videoMediaPort);
+  const mediaMtx = config.mediaMtxAdmin ?? (config.mediaMtxAdminUrl
+    ? new HttpMediaMtxAdmin(config.mediaMtxAdminUrl, config.mediaMtxApiUsername, config.mediaMtxApiPassword)
+    : undefined);
+  const videoControl = new VideoControlService(
+    store,
+    config.jwtSecret,
+    config.videoRtspPort,
+    mediaMtx,
+    config.mediaMuxerUsername,
+    config.mediaMuxerPassword,
+    config.mediaMtxApiUsername,
+    config.mediaMtxApiPassword
+  );
+  const groupMedia = mediaMtx && config.groupMediaManagerConfig
+    ? new GroupMediaManager(config.groupMediaManagerConfig, mediaMtx)
+    : undefined;
+  videoControl.setStateChangeHandler(async () => groupMedia?.reconcile(await videoControl.activeGroups()));
   const bridgePoller = webBridgeAdminUrl ? startWebBridgeAudioPoller(webBridgeAdminUrl, store, hub) : undefined;
   await udpRelay?.start();
-  await videoRelay.start();
+  await videoControl.syncMediaMtxAuth();
+  groupMedia?.reconcile(await videoControl.activeGroups());
   await restorePersistentBans(store, udpRelay, connectionServer);
   const server = http.createServer((req, res) => {
-    handleHttp(req, res, store, config, hub, udpRelay, connectionServer, videoPresence).catch((error) => {
+    handleHttp(req, res, store, config, hub, udpRelay, connectionServer, videoControl, mediaMtx, groupMedia).catch((error) => {
       sendJson(res, 500, { error: error instanceof Error ? error.message : "Internal server error." });
     });
   });
@@ -86,32 +111,6 @@ export async function createApp(config: ServerConfig): Promise<App> {
   server.on("upgrade", async (req, socket, head) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
-      const videoMatch = url.pathname.match(/^\/video\/(publish|view)$/);
-      if (videoMatch) {
-        const room = cleanWebField(url.searchParams.get("room") ?? "", 80);
-        const user = cleanWebField(url.searchParams.get("user") ?? "", 48) || (videoMatch[1] === "view" ? `viewer-${randomUUID().slice(0, 8)}` : "");
-        const camera = cleanWebField(url.searchParams.get("camera") ?? "", 120) || undefined;
-        if (!room || !user) {
-          socket.destroy();
-          return;
-        }
-        if (videoMatch[1] === "publish" && connectionServer) {
-          const group = room.startsWith("SB_") ? room.slice(3) : room;
-          const allowed = (await connectionServer.connections()).some((connection) => connection.group === group && connection.user === user);
-          if (!allowed) {
-            socket.destroy();
-            return;
-          }
-        }
-        wss.handleUpgrade(req, socket, head, (ws) => {
-          if (videoMatch[1] === "publish") {
-            videoRelay.joinPublisher(room, user, camera, req, ws);
-          } else {
-            videoRelay.joinViewer(room, user, req, ws);
-          }
-        });
-        return;
-      }
 
       const match = url.pathname.match(/^\/rooms\/([^/]+)\/stream$/);
       if (!match) {
@@ -139,7 +138,8 @@ export async function createApp(config: ServerConfig): Promise<App> {
     server,
     store,
     async close() {
-      await videoRelay.close();
+      groupMedia?.close();
+      await videoControl.close();
       wss.close();
       bridgePoller?.stop();
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -155,9 +155,11 @@ async function handleHttp(
   store: Store,
   config: ServerConfig,
   hub: RoomHub,
-  udpRelay?: UdpRelay,
-  connectionServer?: ConnectionServerAdmin,
-  videoPresence?: VideoPresenceRegistry
+  udpRelay: UdpRelay | undefined,
+  connectionServer: ConnectionServerAdmin | undefined,
+  videoControl: VideoControlService,
+  mediaMtx: MediaMtxAdmin | undefined,
+  groupMedia: GroupMediaManager | undefined
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -177,7 +179,22 @@ async function handleHttp(
   }
 
   if (req.method === "GET" && (url.pathname === "/video/view" || url.pathname === "/video/view/")) {
-    sendHtml(res, 200, videoViewerPageHtml);
+    const room = videoRoom(url.searchParams.get("room") ?? undefined);
+    if (!room) {
+      sendJson(res, 400, { error: "A valid SonoBus video room is required." });
+      return;
+    }
+    res.writeHead(302, { location: `/${encodeURIComponent(room)}` });
+    res.end();
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/video/control/poll") {
+    try {
+      sendJson(res, 200, await videoControl.poll(await readJson(req)));
+    } catch (error) {
+      sendJson(res, 403, { error: error instanceof Error ? error.message : "Video control denied." });
+    }
     return;
   }
 
@@ -236,50 +253,6 @@ async function handleHttp(
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/video/presence") {
-    const body = await readJson<{
-      sessionId?: string;
-      type?: VideoPresenceKind;
-      group?: string;
-      user?: string;
-      camera?: string;
-      port?: number;
-    }>(req);
-    const group = cleanWebField(body.group, 80);
-    const user = cleanWebField(body.user, 48);
-    if (!videoPresence || !group || !user) {
-      sendJson(res, 400, { error: "video presence, group, and user are required." });
-      return;
-    }
-    if (connectionServer) {
-      const allowed = (await connectionServer.connections()).some((connection) => {
-        const connectionGroup = connection.group ?? "";
-        return connectionGroup === (group.startsWith("SB_") ? group.slice(3) : group) && connection.user === user;
-      });
-      if (!allowed) {
-        sendJson(res, 403, { error: "Video user is not an active SonoBus connection." });
-        return;
-      }
-    }
-    const presence = videoPresence.heartbeat({
-      sessionId: cleanWebField(body.sessionId, 80) || undefined,
-      type: body.type === "video-viewer" ? "video-viewer" : "video-publisher",
-      group,
-      user,
-      camera: cleanWebField(body.camera, 120) || undefined,
-      address: req.socket.remoteAddress ?? undefined,
-      port: Number.isInteger(body.port) && (body.port ?? 0) > 0 ? body.port : undefined
-    });
-    sendJson(res, 200, { sessionId: presence.sessionId, onlineTtlMs: 15000, videoRoom: presence.videoRoom });
-    return;
-  }
-
-  if (req.method === "DELETE" && url.pathname === "/video/presence") {
-    const body = await readJson<{ sessionId?: string }>(req);
-    const removed = videoPresence?.remove(cleanWebField(body.sessionId, 80) ?? "") ?? false;
-    sendJson(res, 200, { removed });
-    return;
-  }
 
   const claims = authenticate(req, config);
   if (!claims) {
@@ -302,6 +275,58 @@ async function handleHttp(
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/admin/video/controls") {
+    if (claims.role !== "admin") {
+      sendJson(res, 403, { error: "Admin role required." });
+      return;
+    }
+    sendJson(res, 200, { controls: await videoControl.list(), paths: (await mediaMtx?.paths().catch(() => [])) ?? [] });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/admin/video/pair") {
+    if (claims.role !== "admin") {
+      sendJson(res, 403, { error: "Admin role required." });
+      return;
+    }
+    const body = await readJson<{ group?: string; user?: string; groupPassword?: string }>(req);
+    const group = cleanWebField(body.group, 77);
+    const user = cleanWebField(body.user, 80);
+    const groupPassword = typeof body.groupPassword === "string" ? body.groupPassword : "";
+    if (Buffer.byteLength(groupPassword, "utf8") > 512) {
+      sendJson(res, 400, { error: "Group password is too long." });
+      return;
+    }
+    if (!videoRoom(group) || !user || user === "web-bridge") {
+      sendJson(res, 400, { error: "A valid group and user are required." });
+      return;
+    }
+    if (connectionServer && !(await connectionServer.connections()).some((connection) => connection.group === group && connection.user === user)) {
+      sendJson(res, 409, { error: "Pairing requires an active SonoBus connection." });
+      return;
+    }
+    sendJson(res, 201, await videoControl.createPairing(group, user, groupPassword));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/admin/video/control") {
+    if (claims.role !== "admin") {
+      sendJson(res, 403, { error: "Admin role required." });
+      return;
+    }
+    const body = await readJson<{ group?: string; user?: string; enabled?: boolean; cameraDeviceId?: string | null }>(req);
+    const group = cleanWebField(body.group, 77);
+    const user = cleanWebField(body.user, 80);
+    if (!videoRoom(group) || !user || typeof body.enabled !== "boolean") {
+      sendJson(res, 400, { error: "group, user, and enabled are required." });
+      return;
+    }
+    const cameraDeviceId = body.cameraDeviceId === null ? null : cleanWebField(body.cameraDeviceId, 200) || undefined;
+    const control = await videoControl.setDesired(group, user, body.enabled, cameraDeviceId);
+    sendJson(res, 200, { control, controls: await videoControl.list() });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/admin/connections") {
     if (claims.role !== "admin") {
       sendJson(res, 403, { error: "Admin role required." });
@@ -311,11 +336,19 @@ async function handleHttp(
       connections: mergeAdminConnections([
         ...hub.connections(),
         ...(udpRelay?.connections() ?? []),
-        ...((await connectionServer?.connections()) ?? []),
-        ...(videoPresence?.connections() ?? [])
+        ...((await connectionServer?.connections()) ?? [])
       ]),
+      videoControls: await videoControl.list(),
+      videoPaths: (await mediaMtx?.paths().catch(() => [])) ?? [],
+      videoUrls: config.publicVideoHost
+        ? {
+            browserBase: `http://${config.publicVideoHost}:${config.publicHttpPort ?? 19090}`,
+            rtspBase: `rtsp://${config.publicVideoHost}:${config.videoRtspPort ?? 19092}`
+          }
+        : undefined,
       diagnostics: {
-        udpRelay: udpRelay?.getDiagnostics()
+        udpRelay: udpRelay?.getDiagnostics(),
+        groupMedia: groupMedia?.status()
       }
     });
     return;
@@ -327,7 +360,7 @@ async function handleHttp(
       return;
     }
     const body = await readJson<{
-      type?: "websocket" | "udp-session" | "sonobus-udp" | "sonobus-connection" | "video-publisher" | "video-viewer";
+      type?: "websocket" | "udp-session" | "sonobus-udp" | "sonobus-connection";
       roomId?: string;
       userId?: string;
       username?: string;
@@ -338,7 +371,7 @@ async function handleHttp(
       hasRelay?: boolean;
     }>(req);
     const udpKick =
-      body.type === "websocket" || body.type === "video-publisher" || body.type === "video-viewer"
+      body.type === "websocket"
         ? undefined
         : body.type === "sonobus-connection"
           ? toUdpFromConnectionRequest(body)
@@ -349,11 +382,8 @@ async function handleHttp(
     const websocketKicked = !body.type || body.type === "websocket" ? hub.kick(body) : 0;
     const udpResult = udpKick ? udpRelay?.kick(udpKick) : undefined;
     const connectionResult = body.type === "sonobus-connection" ? await connectionServer?.kick(toConnectionKick(body)) : undefined;
-    const videoKicked = body.type === "video-publisher" || body.type === "video-viewer"
-      ? videoPresence?.kick(body.sessionId ?? "") ?? 0
-      : 0;
     sendJson(res, 200, {
-      kicked: websocketKicked + (udpResult?.kicked ?? 0) + (connectionResult?.kicked ?? 0) + videoKicked
+      kicked: websocketKicked + (udpResult?.kicked ?? 0) + (connectionResult?.kicked ?? 0)
     });
     return;
   }
@@ -1951,88 +1981,6 @@ const webJoinPageHtml = String.raw`<!doctype html>
 </body>
 </html>`;
 
-const videoViewerPageHtml = String.raw`<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SonoBus 视频</title>
-  <style>
-    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #08090b; color: #f1f4f6; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top, #202631, #08090b 60%); }
-    main { width: min(1100px, 94vw); }
-    h1 { font-size: 20px; font-weight: 600; }
-    #status { color: #aab5c2; margin: 8px 0 16px; }
-    #frame { width: 100%; min-height: 420px; object-fit: contain; background: #000; border: 1px solid #303844; border-radius: 12px; }
-    .hint { color: #7d8997; font-size: 13px; margin-top: 12px; }
-    html.obs, html.obs body { background: transparent; }
-    html.obs body { display: block; min-height: 0; overflow: hidden; }
-    html.obs main { width: 100vw; height: 100vh; }
-    html.obs h1, html.obs #status, html.obs .hint { display: none; }
-    html.obs #frame { width: 100vw; height: 100vh; min-height: 0; border: 0; border-radius: 0; background: transparent; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1 id="title">SonoBus 视频房间</h1>
-    <div id="status">正在连接视频中转服务器...</div>
-    <img id="frame" alt="等待视频发送端" hidden>
-    <div class="hint">发送端由 SonoBus VST 自动连接；本页面只观看，不申请摄像头和麦克风权限。</div>
-  </main>
-  <script>
-    const params = new URLSearchParams(location.search);
-    const room = params.get("room") || "";
-    const obsMode = params.get("obs") === "1";
-    const title = document.getElementById("title");
-    const status = document.getElementById("status");
-    const frame = document.getElementById("frame");
-    let previousUrl = "";
-    let pendingFrame = null;
-    let rendering = false;
-    if (obsMode) document.documentElement.classList.add("obs");
-    title.textContent = room ? "SonoBus 视频：" + room : "SonoBus 视频";
-
-    function renderLatestFrame() {
-      if (rendering || !pendingFrame) return;
-      const blob = pendingFrame;
-      pendingFrame = null;
-      rendering = true;
-      const nextUrl = URL.createObjectURL(blob);
-      frame.onload = function () {
-        if (previousUrl) URL.revokeObjectURL(previousUrl);
-        previousUrl = nextUrl;
-        rendering = false;
-        renderLatestFrame();
-      };
-      frame.onerror = function () {
-        URL.revokeObjectURL(nextUrl);
-        rendering = false;
-        renderLatestFrame();
-      };
-      frame.src = nextUrl;
-      frame.hidden = false;
-    }
-
-    if (!room) {
-      status.textContent = "缺少视频房间参数。";
-    } else {
-      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-      const viewer = "viewer-" + Math.random().toString(36).slice(2, 10);
-      const socket = new WebSocket(scheme + "//" + location.host + "/video/view?room=" + encodeURIComponent(room) + "&user=" + encodeURIComponent(viewer));
-      socket.binaryType = "blob";
-      socket.onopen = function () { status.textContent = "已连接，等待 SonoBus 视频发送端..."; };
-      socket.onmessage = function (event) {
-        if (typeof event.data === "string") return;
-        pendingFrame = event.data;
-        renderLatestFrame();
-        status.textContent = "正在接收视频";
-      };
-      socket.onclose = function () { pendingFrame = null; status.textContent = "视频连接已断开。"; };
-      socket.onerror = function () { status.textContent = "视频连接失败，请检查 19090/TCP。"; };
-    }
-  </script>
-</body>
-</html>`;
 
 const adminPageHtml = String.raw`<!doctype html>
 <html lang="zh-CN">
@@ -2373,12 +2321,13 @@ const adminPageHtml = String.raw`<!doctype html>
               <th>端口</th>
               <th>中继包</th>
               <th>最后活跃</th>
+              <th>摄像头</th>
               <th>状态</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody id="connectionsBody">
-            <tr><td colspan="9" class="muted">登录后点击刷新。</td></tr>
+            <tr><td colspan="10" class="muted">登录后点击刷新。</td></tr>
           </tbody>
         </table>
       </div>
@@ -2425,6 +2374,8 @@ const adminPageHtml = String.raw`<!doctype html>
     const banSeconds = document.getElementById("banSeconds");
     const customBanLabel = document.getElementById("customBanLabel");
     const customBanMinutes = document.getElementById("customBanMinutes");
+    let currentVideoControls = [];
+    let currentVideoUrls = {};
 
     baseUrlInput.value = location.origin;
 
@@ -2463,7 +2414,7 @@ const adminPageHtml = String.raw`<!doctype html>
 
     function logout() {
       localStorage.removeItem(tokenKey);
-      body.innerHTML = '<tr><td colspan="9" class="muted">已退出。</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" class="muted">已退出。</td></tr>';
       bansBody.innerHTML = '<tr><td colspan="6" class="muted">已退出。</td></tr>';
       connectionSummary.textContent = "未刷新";
       setStatus(loginStatus, "已退出。");
@@ -2479,6 +2430,8 @@ const adminPageHtml = String.raw`<!doctype html>
       try {
         const data = await apiGet("/admin/connections");
         const connections = data.connections || [];
+        currentVideoControls = data.videoControls || [];
+        currentVideoUrls = data.videoUrls || {};
         renderConnections(connections);
         const onlineCount = connections.filter((connection) => connection.online !== false).length;
         connectionSummary.textContent = "在线 " + onlineCount + " 个 / 总计 " + connections.length + " 个";
@@ -2537,7 +2490,7 @@ const adminPageHtml = String.raw`<!doctype html>
 
     function renderConnections(connections) {
       if (!connections.length) {
-        body.innerHTML = '<tr><td colspan="9" class="muted">当前没有在线连接。</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="muted">当前没有在线连接。</td></tr>';
         connectionSummary.textContent = "在线 0 个";
         return;
       }
@@ -2551,9 +2504,12 @@ const adminPageHtml = String.raw`<!doctype html>
         const lastSeen = connection.lastSeenAt || connection.joinedAt || connection.createdAt || "-";
         const online = connection.online !== false;
         const systemBridge = isSystemBridge(connection);
-        const videoRoom = systemBridge ? "" : connection.videoRoom || ((connection.type === "sonobus-connection" || connection.type === "sonobus-udp") && room !== "-"
+        const videoRoom = systemBridge ? "" : (connection.type === "sonobus-connection" && room !== "-"
           ? (room.startsWith("SB_") ? room : "SB_" + room)
           : "");
+        const control = connection.type === "sonobus-connection"
+          ? currentVideoControls.find((candidate) => candidate.group === room && candidate.user === user)
+          : undefined;
         const relayStats = displayRelayStats(connection);
         tr.innerHTML =
           cell("类型", displayConnectionType(connection), connection.type) +
@@ -2563,23 +2519,26 @@ const adminPageHtml = String.raw`<!doctype html>
           cell("端口", String(port), String(port)) +
           relayCell(relayStats) +
           cell("最后活跃", lastSeen === "-" ? "-" : new Date(lastSeen).toLocaleString(), lastSeen) +
+          '<td data-label="摄像头"><div class="camera-actions"></div></td>' +
           cell("状态", online ? "在线" : "离线", online ? "online" : "offline") +
           '<td data-label="操作"><div class="actions"></div></td>';
+        const cameraActions = tr.querySelector(".camera-actions");
         const actions = tr.querySelector(".actions");
+        renderCameraControl(cameraActions, connection, control, videoRoom, systemBridge);
         if (!systemBridge) {
           if (videoRoom) {
             const videoConnection = { ...connection, videoRoom };
             const videoButton = document.createElement("button");
             videoButton.className = "secondary";
             videoButton.textContent = "打开视频";
-            videoButton.title = "在新页面打开该群组的视频房间";
+            videoButton.title = "用 WebRTC 打开该群组的 H.264 + Opus 直播";
             videoButton.addEventListener("click", () => openVideo(videoConnection));
             actions.appendChild(videoButton);
 
             const obsButton = document.createElement("button");
             obsButton.className = "secondary";
             obsButton.textContent = "复制 OBS 地址";
-            obsButton.title = "复制 OBS 浏览器源地址（不是媒体源）";
+            obsButton.title = "复制 OBS 媒体源 RTSP 地址";
             obsButton.addEventListener("click", () => copyObsUrl(videoConnection));
             actions.appendChild(obsButton);
           }
@@ -2590,7 +2549,7 @@ const adminPageHtml = String.raw`<!doctype html>
           kickButton.addEventListener("click", () => runAction(() => kick(connection)));
           actions.appendChild(kickButton);
 
-          if (connection.type !== "websocket" && connection.type !== "video-publisher" && connection.type !== "video-viewer") {
+          if (connection.type !== "websocket") {
             const banButton = document.createElement("button");
             banButton.className = "warning";
             banButton.textContent = "封禁";
@@ -2601,6 +2560,94 @@ const adminPageHtml = String.raw`<!doctype html>
         }
         body.appendChild(tr);
       }
+    }
+
+    function renderCameraControl(container, connection, control, videoRoom, systemBridge) {
+      if (systemBridge || connection.type !== "sonobus-connection" || !videoRoom) {
+        container.textContent = "-";
+        return;
+      }
+      container.className = "actions camera-actions";
+      if (!control) {
+        const pairButton = document.createElement("button");
+        pairButton.className = "secondary";
+        pairButton.textContent = "配对摄像头";
+        pairButton.title = "生成一次性配对信息；在该人员的 SonoBus 客户端输入一次";
+        pairButton.addEventListener("click", () => runAction(() => pairCamera(connection)));
+        container.appendChild(pairButton);
+        return;
+      }
+
+      const select = document.createElement("select");
+      const automatic = document.createElement("option");
+      automatic.value = "";
+      automatic.textContent = "自动选择最高 60 FPS";
+      select.appendChild(automatic);
+      for (const camera of control.cameras || []) {
+        const option = document.createElement("option");
+        option.value = camera.id;
+        option.textContent = camera.name;
+        select.appendChild(option);
+      }
+      if (control.cameraDeviceId && !(control.cameras || []).some((camera) => camera.id === control.cameraDeviceId)) {
+        const remembered = document.createElement("option");
+        remembered.value = control.cameraDeviceId;
+        remembered.textContent = "上次设备（当前未发现）";
+        select.appendChild(remembered);
+      }
+      select.value = control.cameraDeviceId || "";
+      select.title = "选择该人员客户端上的摄像头设备";
+      select.addEventListener("change", () => runAction(() => setCameraDesired(connection, control.enabled, select.value || null)));
+      container.appendChild(select);
+
+      const toggle = document.createElement("button");
+      toggle.className = control.enabled ? "danger" : "secondary";
+      toggle.textContent = control.enabled ? "关闭摄像头" : "开启摄像头";
+      toggle.addEventListener("click", () => runAction(() => setCameraDesired(connection, !control.enabled, select.value || null)));
+      container.appendChild(toggle);
+
+      if (!control.online) {
+        const repair = document.createElement("button");
+        repair.className = "secondary";
+        repair.textContent = "重新配对";
+        repair.addEventListener("click", () => runAction(() => pairCamera(connection)));
+        container.appendChild(repair);
+      }
+
+      const details = document.createElement("span");
+      details.className = "muted";
+      details.textContent = cameraStatus(control);
+      container.appendChild(details);
+    }
+
+    function cameraStatus(control) {
+      if (!control.online) return control.enabled ? "控制端离线，重连后自动恢复" : "控制端离线";
+      if (!control.capturing) return control.enabled ? "已下发开启，等待客户端" : "已关闭";
+      const size = control.width && control.height ? control.width + "×" + control.height : "分辨率未知";
+      const fps = control.fps ? " / " + Number(control.fps).toFixed(1) + " FPS" : "";
+      const bitrate = control.bitrate ? " / " + (control.bitrate / 1000000).toFixed(1) + " Mbps" : "";
+      return (control.codec || "H.264") + " / " + size + fps + bitrate + (control.cameraName ? " / " + control.cameraName : "");
+    }
+
+    async function pairCamera(connection) {
+      const groupPassword = window.prompt("请输入该 SonoBus 群组密码；没有密码请留空：", "");
+      if (groupPassword === null) return;
+      const result = await apiPost("/admin/video/pair", { group: connection.group, user: connection.user, groupPassword });
+      const pairingText = "SBPAIR1." + result.pairingId + "." + result.pairingCode;
+      try {
+        await navigator.clipboard.writeText(pairingText);
+        window.prompt("配对信息已复制。请在该人员的 SonoBus 客户端输入一次：", pairingText);
+      } catch {
+        window.prompt("请复制并在该人员的 SonoBus 客户端输入一次：", pairingText);
+      }
+      await refreshConnections();
+      setStatus(connectionStatus, "已生成一次性摄像头配对信息；重新配对会立即撤销旧密钥并关闭旧连接。", false, true);
+    }
+
+    async function setCameraDesired(connection, enabled, cameraDeviceId) {
+      await apiPost("/admin/video/control", { group: connection.group, user: connection.user, enabled, cameraDeviceId });
+      await refreshConnections();
+      setStatus(connectionStatus, enabled ? "已下发开启命令；同群组其他摄像头已关闭。" : "已下发关闭命令。", false, true);
     }
 
     function renderBans(bans) {
@@ -2648,13 +2695,16 @@ const adminPageHtml = String.raw`<!doctype html>
       }
     }
 
-    function videoUrl(connection, obsMode = false) {
+    function streamRoom(connection) {
       const room = connection.videoRoom || connection.group || connection.roomId;
       if (!room) return null;
-      const url = new URL("/video/view", location.origin);
-      url.searchParams.set("room", room.startsWith("SB_") ? room : "SB_" + room);
-      if (obsMode) url.searchParams.set("obs", "1");
-      return url;
+      return room.startsWith("SB_") ? room : "SB_" + room;
+    }
+
+    function videoUrl(connection) {
+      const room = streamRoom(connection);
+      if (!room) return null;
+      return new URL("/" + encodeURIComponent(room), currentVideoUrls.browserBase || location.origin);
     }
 
     function openVideo(connection) {
@@ -2666,19 +2716,25 @@ const adminPageHtml = String.raw`<!doctype html>
       window.open(url.toString(), "_blank", "noopener");
     }
 
+    function obsUrl(connection) {
+      const room = streamRoom(connection);
+      if (!room) return null;
+      const base = currentVideoUrls.rtspBase || ("rtsp://" + location.hostname + ":19092");
+      return base.replace(/\/+$/, "") + "/" + encodeURIComponent(room);
+    }
+
     async function copyObsUrl(connection) {
-      const url = videoUrl(connection, true);
-      if (!url) {
+      const text = obsUrl(connection);
+      if (!text) {
         setStatus(connectionStatus, "该连接没有视频房间。", true);
         return;
       }
-      const text = url.toString();
       try {
         await navigator.clipboard.writeText(text);
-        setStatus(connectionStatus, "已复制 OBS 浏览器源地址：" + text, false, true);
+        setStatus(connectionStatus, "已复制 OBS 媒体源 RTSP 地址：" + text, false, true);
       } catch {
-        window.prompt("复制下面地址，并在 OBS 中添加“浏览器”源：", text);
-        setStatus(connectionStatus, "请在弹出的窗口中复制 OBS 浏览器源地址。");
+        window.prompt("复制下面地址，并在 OBS 中添加“媒体源”：", text);
+        setStatus(connectionStatus, "请在弹出的窗口中复制 OBS 媒体源地址。");
       }
     }
 
@@ -2691,9 +2747,6 @@ const adminPageHtml = String.raw`<!doctype html>
       }
       if (connection.type === "udp-session") {
         return { type: "udp-session", sessionId: connection.sessionId };
-      }
-      if (connection.type === "video-publisher" || connection.type === "video-viewer") {
-        return { type: connection.type, sessionId: connection.sessionId };
       }
       return { type: "websocket", roomId: connection.roomId, userId: connection.userId };
     }

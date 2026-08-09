@@ -616,8 +616,7 @@ public:
         bool largeShare = false;
         int pushViewMode = PushAndView;
         String extraParams;
-        bool autoConnect = true;
-        String cameraDevice;
+        String pairingId;
     };
 
     VideoLinkInfo & getVideoLinkInfo() { return mVideoLinkInfo; }
@@ -625,6 +624,9 @@ public:
     void stopVideoSender();
     String getVideoStatusText() const;
     String getVideoCameraName() const;
+    bool setVideoPairingText(const String& text, String& error);
+    void clearVideoPairing();
+    bool hasVideoPairing() const;
 
 
     // sets and gets the format we send out

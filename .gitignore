@@ -15,3 +15,5 @@ windows-build-asio/
 macos-build/
 linux-build/
 linux-server-bundle/
+auto.crt
+auto.key

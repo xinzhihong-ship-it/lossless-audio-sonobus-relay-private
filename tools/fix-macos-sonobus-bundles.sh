@@ -5,6 +5,7 @@ ROOT_DIR="${1:-sonobus}"
 APP_BUNDLE="$ROOT_DIR/build/SonoBus_artefacts/Release/Standalone/SonoBus.app"
 APP_INFO_SOURCE="$ROOT_DIR/build/SonoBus_artefacts/JuceLibraryCode/SonoBus_Standalone/Info.plist"
 APP_ENTITLEMENTS="$ROOT_DIR/build/SonoBus_artefacts/JuceLibraryCode/SonoBus_Standalone.entitlements"
+VIDEO_HELPER_ENTITLEMENTS="tools/macos/video-helper.entitlements"
 
 copy_info_plist() {
   local source="$1"
@@ -22,10 +23,17 @@ sign_bundle() {
     return
   fi
 
+  local helpers="$bundle/Contents/Helpers"
+  if [[ -d "$helpers" ]]; then
+    while IFS= read -r -d '' helper; do
+      codesign --force --sign - --options runtime --entitlements "$VIDEO_HELPER_ENTITLEMENTS" "$helper"
+    done < <(find "$helpers" -name SonoBusVideoHelper.app -type d -print0)
+  fi
+
   if [[ -f "$entitlements" ]]; then
-    codesign --force --deep --sign - --entitlements "$entitlements" "$bundle"
+    codesign --force --sign - --entitlements "$entitlements" "$bundle"
   else
-    codesign --force --deep --sign - "$bundle"
+    codesign --force --sign - "$bundle"
   fi
 }
 
