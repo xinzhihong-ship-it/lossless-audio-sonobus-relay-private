@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lossless_audio}
+      POSTGRES_USER: ${POSTGRES_USER:-lossless_audio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      DATABASE_URL: postgres://${POSTGRES_USER:-lossless_audio}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lossless_audio}
+      MAX_BYTES_PER_SECOND_PER_CLIENT: ${MAX_BYTES_PER_SECOND_PER_CLIENT:-52428800}
+      UDP_RELAY_PORT: ${UDP_RELAY_PORT:-9000}
+      VIDEO_MEDIA_PORT: ${VIDEO_MEDIA_PORT:-19091}
+      CONNECTION_SERVER_ADMIN_URL: http://connection-server:18098
+      WEB_BRIDGE_ADMIN_URL: http://web-bridge:18100
+    ports:
+      - "${UDP_RELAY_PORT:-9000}:${UDP_RELAY_PORT:-9000}/udp"
+      - "${VIDEO_MEDIA_PORT:-19091}:${VIDEO_MEDIA_PORT:-19091}/udp"
+    depends_on:
+      - postgres
+      - connection-server
+
+  connection-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.connection-server
+    restart: unless-stopped
+    environment:
+      CONNECTION_SERVER_PORT: ${CONNECTION_SERVER_PORT:-10998}
+      CONNECTION_SERVER_ADMIN_PORT: 18098
+    ports:
+      - "${CONNECTION_SERVER_PORT:-10998}:${CONNECTION_SERVER_PORT:-10998}/tcp"
+      - "${CONNECTION_SERVER_PORT:-10998}:${CONNECTION_SERVER_PORT:-10998}/udp"
+
+  web-bridge:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web-bridge
+    restart: unless-stopped
+    environment:
+      BRIDGE_CONNECTION_HOST: connection-server
+      BRIDGE_CONNECTION_PORT: ${CONNECTION_SERVER_PORT:-10998}
+      BRIDGE_GROUP: ${WEB_BRIDGE_GROUP:-web}
+      BRIDGE_USERNAME: ${WEB_BRIDGE_USERNAME:-web-bridge}
+      BRIDGE_GROUP_PASSWORD: ${WEB_BRIDGE_GROUP_PASSWORD:-}
+      BRIDGE_ADMIN_PORT: 18100
+      BRIDGE_RELAY_HOST: server
+      BRIDGE_RELAY_PORT: ${UDP_RELAY_PORT:-9000}
+    depends_on:
+      - connection-server
+      - server
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "${PUBLIC_HTTP_PORT:-19090}:80"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - server
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

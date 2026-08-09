@@ -1,0 +1,71 @@
+name: Build Linux Server Bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/build-linux-server.yml"
+      - "deploy/**"
+      - "docs/**"
+      - "tools/web-bridge/**"
+      - "tools/connection-server/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.base.json"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-server:
+    name: Linux Server Docker Bundle
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Build Docker image
+        run: docker build -f deploy/Dockerfile.server -t lossless-audio-server:ci .
+
+      - name: Collect deploy bundle
+        run: |
+          mkdir -p artifacts/lossless-audio-server
+          cp -pR deploy artifacts/lossless-audio-server/
+          cp -pR docs artifacts/lossless-audio-server/
+          cp -pR packages artifacts/lossless-audio-server/
+          mkdir -p artifacts/lossless-audio-server/tools artifacts/lossless-audio-server/sonobus/deps
+          cp -pR tools/connection-server artifacts/lossless-audio-server/tools/
+          cp -pR tools/web-bridge artifacts/lossless-audio-server/tools/
+          cp -pR sonobus/deps/aoo artifacts/lossless-audio-server/sonobus/deps/
+          cp -p package.json package-lock.json tsconfig.base.json README.md LICENSE LICENSE_EXCEPTION NOTICE.md artifacts/lossless-audio-server/
+          cp -p sonobus/LICENSE artifacts/lossless-audio-server/sonobus-LICENSE
+          cp -p sonobus/LICENSE_EXCEPTION artifacts/lossless-audio-server/sonobus-LICENSE_EXCEPTION
+          tar -czf lossless-audio-server-linux-docker.tar.gz -C artifacts lossless-audio-server
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lossless-audio-server-linux-docker
+          path: lossless-audio-server-linux-docker.tar.gz
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" lossless-audio-server-linux-docker.tar.gz --clobber

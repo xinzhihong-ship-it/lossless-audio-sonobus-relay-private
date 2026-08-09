@@ -1,0 +1,87 @@
+name: Build macOS SonoBus
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/build-macos.yml"
+      - "sonobus/**"
+      - "tools/macos/**"
+      - "README.md"
+      - "LICENSE"
+      - "LICENSE_EXCEPTION"
+      - "NOTICE.md"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: macOS Universal Release
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        working-directory: sonobus
+        run: |
+          cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUniversalBinary=ON \
+            -B build
+
+      - name: Build
+        working-directory: sonobus
+        run: cmake --build build --config Release --parallel "$(sysctl -n hw.logicalcpu)"
+
+      - name: Fix macOS bundle identity
+        run: tools/fix-macos-sonobus-bundles.sh sonobus
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts/macos-universal
+          cp -pR sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBus.app artifacts/macos-universal/
+          cp -pR sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3 artifacts/macos-universal/
+          cp -pR sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3 artifacts/macos-universal/
+          if [ -d sonobus/build/SonoBus_artefacts/Release/AU/SonoBus.component ]; then
+            cp -pR sonobus/build/SonoBus_artefacts/Release/AU/SonoBus.component artifacts/macos-universal/
+          fi
+          if [ -d sonobus/build/SonoBus_artefacts/Release/LV2/SonoBus.lv2 ]; then
+            cp -pR sonobus/build/SonoBus_artefacts/Release/LV2/SonoBus.lv2 artifacts/macos-universal/
+          fi
+          cp -p README.md LICENSE LICENSE_EXCEPTION NOTICE.md artifacts/macos-universal/
+          cp -p sonobus/LICENSE artifacts/macos-universal/sonobus-LICENSE
+          cp -p sonobus/LICENSE_EXCEPTION artifacts/macos-universal/sonobus-LICENSE_EXCEPTION
+          ditto -c -k --sequesterRsrc --keepParent artifacts/macos-universal sonobus-macos-universal.zip
+
+      - name: Build pkg installer
+        run: |
+          chmod +x tools/macos/build-pkg.sh
+          tools/macos/build-pkg.sh 0.1.4 sonobus-macos-universal.pkg
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonobus-macos-universal
+          path: sonobus-macos-universal.zip
+
+      - name: Upload pkg installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonobus-macos-universal-installer
+          path: sonobus-macos-universal.pkg
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" sonobus-macos-universal.zip sonobus-macos-universal.pkg --clobber
