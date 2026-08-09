@@ -33,21 +33,17 @@ public:
         pairingEditor.setTextToShowWhenEmpty(TRANS("SBPAIR1...（仅首次配对）"), Colours::grey);
         pairingEditor.setTooltip(TRANS("配对密钥只写入 macOS 钥匙串或 Windows 凭据管理器，不写入 DAW 工程。"));
 
-        savePairingButton.setButtonText(TRANS("保存配对"));
-        savePairingButton.onClick = [this]
+        pairingEditor.onTextChange = [this]
         {
-            String error;
-            if (processor.setVideoPairingText(pairingEditor.getText(), error))
-            {
-                pairingEditor.clear();
-                localMessage = TRANS("配对已安全保存；等待管理员控制。 ");
-            }
-            else
-            {
-                localMessage = error;
-            }
-            updateState();
+            if (savingPairing) return;
+            String pairingId;
+            MemoryBlock pairingKey;
+            if (VideoRelayClient::parsePairingText(pairingEditor.getText(), pairingId, pairingKey))
+                savePairing();
         };
+
+        savePairingButton.setButtonText(TRANS("保存配对"));
+        savePairingButton.onClick = [this] { savePairing(); };
 
         revokePairingButton.setButtonText(TRANS("撤销本机配对"));
         revokePairingButton.setColour(TextButton::buttonColourId, Colours::darkred.withAlpha(0.7f));
@@ -107,6 +103,25 @@ public:
     }
 
 private:
+    void savePairing()
+    {
+        if (savingPairing) return;
+        savingPairing = true;
+        String error;
+        if (processor.setVideoPairingText(pairingEditor.getText(), error))
+        {
+            pairingEditor.clear();
+            localMessage = TRANS("配对已安全保存；等待管理员控制。 ");
+        }
+        else
+        {
+            localMessage = error;
+        }
+        savingPairing = false;
+        updateState();
+    }
+
+
     void timerCallback() override { updateState(); }
 
 public:
@@ -121,8 +136,8 @@ public:
             MemoryBlock clipboardKey;
             if (VideoRelayClient::parsePairingText(clipboardText, clipboardPairingId, clipboardKey))
             {
-                pairingEditor.setText(clipboardText, dontSendNotification);
-                localMessage = TRANS("已从剪贴板自动填入配对信息，请点击保存配对。");
+                pairingEditor.setText(clipboardText, true);
+                return;
             }
         }
 
@@ -155,6 +170,7 @@ private:
 
     SonobusAudioProcessor& processor;
     String localMessage;
+    bool savingPairing = false;
     Label titleLabel;
     Label infoLabel;
     Label statusLabel;

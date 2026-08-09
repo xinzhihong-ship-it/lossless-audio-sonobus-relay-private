@@ -131,12 +131,9 @@ void VideoRelayClient::run()
 #else
     const auto ffmpegPath = findFfmpeg();
     if (ffmpegPath.isEmpty())
-    {
         setStatus(Status::error, TRANS("安装包中缺少 FFmpeg 视频运行时"));
-        return;
-    }
 
-    auto devices = getCameraDevices(ffmpegPath);
+    auto devices = ffmpegPath.isNotEmpty() ? getCameraDevices(ffmpegPath) : juce::Array<CameraDevice>();
     auto lastDeviceRefresh = juce::Time::getMillisecondCounter();
     {
         const juce::ScopedLock lock(stateLock);
@@ -152,6 +149,14 @@ void VideoRelayClient::run()
         {
             stopPublisher();
             setStatus(Status::error, lastError.isNotEmpty() ? lastError : TRANS("摄像头控制连接失败"));
+            wait(juce::jlimit(500, 5000, pollAfterMs));
+            continue;
+        }
+
+        if (ffmpegPath.isEmpty())
+        {
+            stopPublisher();
+            setStatus(Status::error, TRANS("安装包中缺少 FFmpeg 视频运行时"));
             wait(juce::jlimit(500, 5000, pollAfterMs));
             continue;
         }
