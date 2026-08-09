@@ -2524,7 +2524,8 @@ const adminPageHtml = String.raw`<!doctype html>
         const port = connection.port || "-";
         const lastSeen = connection.lastSeenAt || connection.joinedAt || connection.createdAt || "-";
         const online = connection.online !== false;
-        const videoRoom = connection.videoRoom || ((connection.type === "sonobus-connection" || connection.type === "sonobus-udp") && room !== "-"
+        const systemBridge = isSystemBridge(connection);
+        const videoRoom = systemBridge ? "" : connection.videoRoom || ((connection.type === "sonobus-connection" || connection.type === "sonobus-udp") && room !== "-"
           ? (room.startsWith("SB_") ? room : "SB_" + room)
           : "");
         const relayStats = displayRelayStats(connection);
@@ -2539,28 +2540,30 @@ const adminPageHtml = String.raw`<!doctype html>
           cell("状态", online ? "在线" : "离线", online ? "online" : "offline") +
           '<td data-label="操作"><div class="actions"></div></td>';
         const actions = tr.querySelector(".actions");
-        if (videoRoom) {
-          const videoButton = document.createElement("button");
-          videoButton.className = "secondary";
-          videoButton.textContent = "打开视频";
-          videoButton.title = "在新页面打开该群组的视频房间";
-          videoButton.addEventListener("click", () => openVideo({ ...connection, videoRoom }));
-          actions.appendChild(videoButton);
-        }
-        const kickButton = document.createElement("button");
-        kickButton.className = "danger";
-        kickButton.textContent = "踢出";
-        kickButton.title = "只删除当前在线记录；UDP 客户端继续发包会重新出现";
-        kickButton.addEventListener("click", () => runAction(() => kick(connection)));
-        actions.appendChild(kickButton);
+        if (!systemBridge) {
+          if (videoRoom) {
+            const videoButton = document.createElement("button");
+            videoButton.className = "secondary";
+            videoButton.textContent = "打开视频";
+            videoButton.title = "在新页面打开该群组的视频房间";
+            videoButton.addEventListener("click", () => openVideo({ ...connection, videoRoom }));
+            actions.appendChild(videoButton);
+          }
+          const kickButton = document.createElement("button");
+          kickButton.className = "danger";
+          kickButton.textContent = "踢出";
+          kickButton.title = "只删除当前在线记录；UDP 客户端继续发包会重新出现";
+          kickButton.addEventListener("click", () => runAction(() => kick(connection)));
+          actions.appendChild(kickButton);
 
-        if (connection.type !== "websocket" && connection.type !== "video-publisher" && connection.type !== "video-viewer") {
-          const banButton = document.createElement("button");
-          banButton.className = "warning";
-          banButton.textContent = "封禁";
-          banButton.title = "踢出并按上方时长封禁";
-          banButton.addEventListener("click", () => runAction(() => ban(connection)));
-          actions.appendChild(banButton);
+          if (connection.type !== "websocket" && connection.type !== "video-publisher" && connection.type !== "video-viewer") {
+            const banButton = document.createElement("button");
+            banButton.className = "warning";
+            banButton.textContent = "封禁";
+            banButton.title = "踢出并按上方时长封禁";
+            banButton.addEventListener("click", () => runAction(() => ban(connection)));
+            actions.appendChild(banButton);
+          }
         }
         body.appendChild(tr);
       }
@@ -2677,7 +2680,13 @@ const adminPageHtml = String.raw`<!doctype html>
       return expiresAt ? new Date(expiresAt).toLocaleString() : "永久";
     }
 
+    function isSystemBridge(connection) {
+      return (connection.type === "sonobus-connection" || connection.type === "sonobus-udp")
+        && connection.user === "web-bridge";
+    }
+
     function displayConnectionType(connection) {
+      if (isSystemBridge(connection)) return "系统桥接服务";
       const labels = {
         "websocket": "桌面端 WebSocket",
         "udp-session": "桌面端 UDP 中继",

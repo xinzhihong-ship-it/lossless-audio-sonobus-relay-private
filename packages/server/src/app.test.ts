@@ -112,6 +112,8 @@ test("admin web page is served for browser-based remote administration", async (
     assert.match(html, /connection.type !== "sonobus-udp" && !connection.hasRelay/);
     assert.match(html, /relayCell\(relayStats\)/);
     assert.match(html, /末包 /);
+    assert.match(html, /系统桥接服务/);
+    assert.match(html, /if \(!systemBridge\)/);
   } finally {
     await app.close();
   }
