@@ -10,7 +10,7 @@ The current SBV1 JPEG-over-UDP relay is bandwidth-heavy, fragments every frame i
 
 - Fully self-hosted; no VDO.Ninja or third-party runtime video service.
 - Windows and macOS camera publishers in SonoBus Standalone, VST3, and AU builds.
-- Select the highest camera resolution that supports 60 FPS; never silently force 640×360.
+- Windows selects the highest-throughput color source currently available through `SharedReadOnly`; macOS selects the highest verified 60 FPS mode. The administrator may set persisted output resolution/FPS/bitrate caps below the captured mode, never above it.
 - End-to-end latency target: below 500 ms.
 - 1–5 simultaneous viewers per group.
 - Browser viewers install nothing.
@@ -36,12 +36,12 @@ The current SBV1 JPEG-over-UDP relay is bandwidth-heavy, fragments every frame i
 
 ## Publisher strategy
 
-Use a crash-isolated companion video process controlled by SonoBus, not encoder work inside the plugin process audio path. The helper owns the camera, reports device IDs/names, obeys authenticated administrator commands, chooses the highest 60 FPS mode, uses the platform H.264 hardware encoder when available, publishes video-only RTSP, reconnects, and reports actual resolution/FPS/bitrate over localhost IPC. Packaging must be self-contained and checksum-pinned. The operating system still performs first camera permission approval and the client always displays a visible capture indicator.
+Use a crash-isolated companion video process controlled by SonoBus, not encoder work inside the plugin process audio path. The helper reports device IDs/names, obeys authenticated administrator commands, selects the highest current shared source without taking exclusive ownership, uses the platform H.264 hardware encoder when available, applies only downward output limits, publishes video-only RTSP, reconnects, and reports capture plus output resolution/FPS/bitrate over IPC. Packaging must be self-contained and checksum-pinned. The operating system still performs first camera permission approval and the client always displays a visible capture indicator.
 
 ## Acceptance
 
 1. No JPEG frame encoder, SBV1 packetizer, UDP JPEG assembler, or JPEG WebSocket viewer remains.
-2. A supported 60 FPS camera publishes its highest 60 FPS mode without silent resolution reduction.
+2. Windows publishes its highest current `SharedReadOnly` source by default; administrator limits can only reduce resolution, FPS, or bitrate. A supported macOS 60 FPS camera publishes its highest verified 60 FPS mode.
 3. Only the administrator can start/stop a camera or select its device after one-time local authorization; the last administrator state restores after reconnect/restart.
 4. Enabling another person in the same group stops the previous publisher, so the group has one live camera and one stable URL.
 5. The public stream carries H.264 video plus the complete group mix as Opus 48 kHz stereo at 160 kbps.

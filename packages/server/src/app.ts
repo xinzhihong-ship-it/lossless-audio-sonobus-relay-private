@@ -327,7 +327,15 @@ async function handleHttp(
       sendJson(res, 403, { error: "Admin role required." });
       return;
     }
-    const body = await readJson<{ group?: string; user?: string; enabled?: boolean; cameraDeviceId?: string | null }>(req);
+    const body = await readJson<{
+      group?: string;
+      user?: string;
+      enabled?: boolean;
+      cameraDeviceId?: string | null;
+      maxHeight?: number;
+      maxFps?: number;
+      maxBitrate?: number;
+    }>(req);
     const group = cleanWebField(body.group, 77);
     const user = cleanWebField(body.user, 80);
     if (!videoRoom(group) || !user || typeof body.enabled !== "boolean") {
@@ -339,7 +347,16 @@ async function handleHttp(
       sendJson(res, 400, { error: "Select a camera before enabling it." });
       return;
     }
-    const control = await videoControl.setDesired(group, user, body.enabled, cameraDeviceId);
+    const maxHeight = body.maxHeight === undefined ? undefined : Number(body.maxHeight);
+    const maxFps = body.maxFps === undefined ? undefined : Number(body.maxFps);
+    const maxBitrate = body.maxBitrate === undefined ? undefined : Number(body.maxBitrate);
+    if ((maxHeight !== undefined && ![0, 360, 480, 720, 1080, 1440, 2160].includes(maxHeight))
+        || (maxFps !== undefined && ![0, 15, 24, 25, 30, 50, 60].includes(maxFps))
+        || (maxBitrate !== undefined && ![0, 1500000, 3000000, 5000000, 8000000, 12000000, 20000000].includes(maxBitrate))) {
+      sendJson(res, 400, { error: "Invalid video quality limit." });
+      return;
+    }
+    const control = await videoControl.setDesired({ group, user, enabled: body.enabled, cameraDeviceId, maxHeight, maxFps, maxBitrate });
     sendJson(res, 200, { control, controls: await videoControl.list() });
     return;
   }
@@ -2224,6 +2241,22 @@ const adminPageHtml = String.raw`<!doctype html>
       flex-wrap: wrap;
       align-items: center;
     }
+    .camera-quality-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 8px;
+    }
+    .camera-quality-row label {
+      display: grid;
+      gap: 4px;
+      color: #95a0aa;
+      font-size: 12px;
+      min-width: 0;
+    }
+    .camera-quality-row select {
+      width: 100%;
+      min-width: 0;
+    }
     .camera-select {
       flex: 1 1 220px;
       width: 100%;
@@ -2833,6 +2866,48 @@ const adminPageHtml = String.raw`<!doctype html>
       }
       container.appendChild(controls);
 
+      const qualityRow = document.createElement("div");
+      qualityRow.className = "camera-quality-row";
+      const makeQualitySelect = (labelText, value, options) => {
+        const label = document.createElement("label");
+        const caption = document.createElement("span");
+        caption.textContent = labelText;
+        const qualitySelect = document.createElement("select");
+        for (const optionData of options) {
+          const option = document.createElement("option");
+          option.value = String(optionData[0]);
+          option.textContent = optionData[1];
+          qualitySelect.appendChild(option);
+        }
+        qualitySelect.value = String(value || 0);
+        label.appendChild(caption);
+        label.appendChild(qualitySelect);
+        qualityRow.appendChild(label);
+        return qualitySelect;
+      };
+      const captureSummary = control.captureWidth && control.captureHeight
+        ? "（当前共享最高 " + control.captureWidth + "×" + control.captureHeight
+          + (control.captureFps ? "@" + Number(control.captureFps).toFixed(1) : "") + "）"
+        : "";
+      const heightSelect = makeQualitySelect("分辨率上限" + captureSummary, control.maxHeight, [
+        [0, "最高"], [2160, "2160p"], [1440, "1440p"], [1080, "1080p"], [720, "720p"], [480, "480p"], [360, "360p"]
+      ]);
+      const fpsSelect = makeQualitySelect("帧率上限", control.maxFps, [
+        [0, "最高"], [60, "60 FPS"], [50, "50 FPS"], [30, "30 FPS"], [25, "25 FPS"], [24, "24 FPS"], [15, "15 FPS"]
+      ]);
+      const bitrateSelect = makeQualitySelect("码率上限", control.maxBitrate, [
+        [0, "自动"], [20000000, "20 Mbps"], [12000000, "12 Mbps"], [8000000, "8 Mbps"], [5000000, "5 Mbps"], [3000000, "3 Mbps"], [1500000, "1.5 Mbps"]
+      ]);
+      const applyQuality = () => runAction(() => setCameraDesired(connection, control.enabled, select.value || null, {
+        maxHeight: Number(heightSelect.value),
+        maxFps: Number(fpsSelect.value),
+        maxBitrate: Number(bitrateSelect.value)
+      }));
+      heightSelect.addEventListener("change", applyQuality);
+      fpsSelect.addEventListener("change", applyQuality);
+      bitrateSelect.addEventListener("change", applyQuality);
+      container.appendChild(qualityRow);
+
       const details = document.createElement("span");
       details.className = "camera-details";
       details.textContent = cameraStatus(control);
@@ -2847,7 +2922,11 @@ const adminPageHtml = String.raw`<!doctype html>
       const size = control.width && control.height ? control.width + "×" + control.height : "分辨率未知";
       const fps = control.fps ? " / " + Number(control.fps).toFixed(1) + " FPS" : "";
       const bitrate = control.bitrate ? " / " + (control.bitrate / 1000000).toFixed(1) + " Mbps" : "";
-      return (control.codec || "H.264") + " / " + size + fps + bitrate + (control.cameraName ? " / " + control.cameraName : "");
+      const capture = control.captureWidth && control.captureHeight
+        ? "采集 " + control.captureWidth + "×" + control.captureHeight
+          + (control.captureFps ? "@" + Number(control.captureFps).toFixed(1) : "") + " → "
+        : "";
+      return capture + (control.codec || "H.264") + " / " + size + fps + bitrate + (control.cameraName ? " / " + control.cameraName : "");
     }
 
     async function approveCameraEnrollment(enrollment) {
@@ -2862,10 +2941,15 @@ const adminPageHtml = String.raw`<!doctype html>
       setStatus(connectionStatus, "摄像头客户端已授权；密钥将自动保存到客户端系统凭据存储。", false, true);
     }
 
-    async function setCameraDesired(connection, enabled, cameraDeviceId) {
+    async function setCameraDesired(connection, enabled, cameraDeviceId, quality) {
       const session = captureAdminSession();
       if (!adminSessionCurrent(session)) return;
-      await apiPost("/admin/video/control", { group: connection.group, user: connection.user, enabled, cameraDeviceId });
+      await apiPost("/admin/video/control", Object.assign({
+        group: connection.group,
+        user: connection.user,
+        enabled,
+        cameraDeviceId
+      }, quality || {}));
       if (!adminSessionCurrent(session)) return;
       await refreshConnections();
       if (!adminSessionCurrent(session)) return;

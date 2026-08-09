@@ -40,6 +40,7 @@ inline juce::String translated(const char* text)
 
 juce::Array<CameraDevice> parseWindowsCameraDevices(const juce::String& output);
 juce::Array<CameraMode> parseWindowsCameraModes(const juce::String& output);
+CameraMode constrainOutputMode(CameraMode capture, int maxHeight, double maxFps);
 CameraFailure classifyCameraFailure(const juce::String& output);
 juce::String lastOutputLine(const juce::String& output, int maxLength = 500);
 }

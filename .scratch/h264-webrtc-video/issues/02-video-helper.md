@@ -4,7 +4,7 @@ Type: task
 Status: resolved
 Blocked by: 01
 
-Create the Windows/macOS companion process that enumerates 60 FPS camera modes, chooses the highest resolution, performs low-latency H.264 hardware encoding, publishes video-only RTSP, reconnects, and exposes localhost status/control IPC.
+Create the Windows/macOS companion process that selects the highest permitted camera source, performs low-latency H.264 hardware encoding, applies only downward administrator output limits, publishes video-only RTSP, reconnects, and exposes status/control IPC.
 
 ## Done when
 
@@ -16,5 +16,5 @@ Create the Windows/macOS companion process that enumerates 60 FPS camera modes, 
 ## Comments
 
 ### 2026-08-09 resolution
-- The crash-isolated FFmpeg companion enumerates and probes real 60 FPS modes, reports metrics, and restarts independently of audio processing.
+- The crash-isolated companion reports capture/output metrics and restarts independently of audio processing. Windows uses the highest-throughput current `SharedReadOnly` source and only downscales/drops frames when an administrator limit requires it; macOS keeps probing real 60 FPS modes.
 - macOS completed a real 1080p60 VideoToolbox probe; Windows CI now asserts DirectShow, H.264 encoder and RTSP support in the bundled runtime.

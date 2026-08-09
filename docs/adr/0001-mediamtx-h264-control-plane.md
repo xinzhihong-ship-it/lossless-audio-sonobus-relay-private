@@ -13,7 +13,7 @@ No earlier ADR constrains the video transport, so this decision does not conflic
 
 - Remove the custom JPEG/SBV1 transport.
 - Use a crash-isolated Windows/macOS helper for camera capture and low-latency hardware H.264 encoding.
-- Select the highest camera mode that advertises 60 FPS; do not silently force a low resolution.
+- On Windows, select the highest-throughput color source currently exposed by `SharedReadOnly`; on macOS, keep selecting the highest verified 60 FPS mode. Publish the source unchanged by default, with persisted administrator output caps that may only downscale, drop frames, or reduce bitrate.
 - Publish video-only RTSP to self-hosted MediaMTX.
 - Use MediaMTX WebRTC/WHEP for browsers and RTSP for OBS.
 - Keep one stable public H.264 + Opus stream per SonoBus group and at most one active camera publisher in that group.

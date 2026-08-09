@@ -49,8 +49,12 @@ private:
     {
         int width = 0;
         int height = 0;
-        bool isValid() const noexcept { return width > 0 && height > 0; }
-        bool operator==(const CameraMode& other) const noexcept { return width == other.width && height == other.height; }
+        double fps = 0.0;
+        bool isValid() const noexcept { return width > 0 && height > 0 && fps > 0.0; }
+        bool operator==(const CameraMode& other) const noexcept
+        {
+            return width == other.width && height == other.height && fps == other.fps;
+        }
         bool operator!=(const CameraMode& other) const noexcept { return !(*this == other); }
     };
 
@@ -62,6 +66,9 @@ private:
         juce::String publishUser;
         juce::String publishNonce;
         int rtspPort = 19092;
+        int maxHeight = 0;
+        double maxFps = 0.0;
+        int maxBitrate = 0;
         juce::String revision;
     };
 
@@ -70,11 +77,11 @@ private:
     bool requestEnrollment(int& pollAfterMs);
     juce::var makeStatusPayload() const;
     juce::Array<CameraDevice> getCameraDevices(const juce::String& ffmpegPath, juce::String& error) const;
-    juce::Array<CameraMode> get60FpsCameraModes(const juce::String& ffmpegPath,
-                                                const juce::String& cameraDeviceId,
-                                                juce::String& error) const;
-    CameraMode findHighest60FpsMode(const juce::String& ffmpegPath,
-                                    const juce::String& cameraDeviceId);
+    juce::Array<CameraMode> getPreferredCameraModes(const juce::String& ffmpegPath,
+                                                    const juce::String& cameraDeviceId,
+                                                    juce::String& error) const;
+    CameraMode findPreferredCameraMode(const juce::String& ffmpegPath,
+                                       const juce::String& cameraDeviceId);
     bool probeCameraMode(const juce::String& ffmpegPath,
                          const juce::String& cameraDeviceId,
                          CameraMode mode,
@@ -100,6 +107,7 @@ private:
                                          CameraMode mode,
                                          const juce::String& encoder,
                                          const DesiredState& desired) const;
+    static CameraMode outputModeFor(CameraMode captureMode, const DesiredState& desired);
     void setStatus(Status newStatus, const juce::String& error = {});
 
     static juce::String hmacSha256Base64Url(const juce::MemoryBlock& key, const juce::String& value);
@@ -126,6 +134,8 @@ private:
     juce::String lastError;
     juce::String cameraError;
     CameraMode activeMode;
+    CameraMode captureMode;
+    double captureFps = 0.0;
     double actualFps = 0.0;
     int actualBitrate = 0;
     juce::uint64 sequence = 0;

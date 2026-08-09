@@ -32,10 +32,25 @@ juce::Array<CameraMode> parseWindowsCameraModes(const juce::String& output)
     {
         const auto values = fields(line, "SONOBUS_MODE\t");
         if (values.size() >= 4 && values[1].getIntValue() > 0 && values[2].getIntValue() > 0
-            && values[3].getDoubleValue() >= 59.0)
+            && values[3].getDoubleValue() > 0.0)
             modes.add({ values[1].getIntValue(), values[2].getIntValue(), values[3].getDoubleValue() });
     }
     return modes;
+}
+
+CameraMode constrainOutputMode(CameraMode capture, int maxHeight, double maxFps)
+{
+    if (capture.width <= 0 || capture.height <= 0 || capture.fps <= 0.0) return {};
+    auto output = capture;
+    if (maxHeight > 0 && maxHeight < output.height)
+    {
+        output.height = maxHeight - (maxHeight % 2);
+        if (output.height < 2) output.height = 2;
+        output.width = ((capture.width * output.height / capture.height) / 2) * 2;
+        if (output.width < 2) output.width = 2;
+    }
+    if (maxFps > 0.0 && maxFps < output.fps) output.fps = maxFps;
+    return output;
 }
 
 CameraFailure classifyCameraFailure(const juce::String& output)

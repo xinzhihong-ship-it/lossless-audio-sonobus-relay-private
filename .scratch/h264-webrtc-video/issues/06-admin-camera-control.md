@@ -21,5 +21,5 @@ Pair each client after one-time local camera authorization, report stable camera
 
 ### 2026-08-10 automatic enrollment and explicit shared-camera selection
 - Replaced visible pairing codes with authenticated pending enrollment and explicit administrator approval. Pairing material is derived on each side, never returned by public HTTP, stored in Credential Manager/Keychain, and excluded from DAW project state.
-- Administrators must select an exact reported camera before enabling capture; server validation rejects an empty device. Missing, busy, disconnected and below-60-FPS states stay attached to that selected ID, with no fallback device and 1-30 second retry.
+- Administrators must select an exact reported camera before enabling capture; server validation rejects an empty device. Missing, busy or disconnected states stay attached to that selected ID, with no fallback device and 1-30 second retry. Persisted output caps may only reduce the selected source's resolution, FPS, or bitrate.
 - Production responsive checks passed at 1365/1024/640 px with no horizontal overflow. The old pairing route returns `404`, invalid enrollment returns `403`, and current legacy clients correctly remain in the no-camera state until upgraded.

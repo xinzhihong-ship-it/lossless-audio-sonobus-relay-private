@@ -44,6 +44,12 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Validate Caddy WebRTC routes
+        run: >-
+          docker run --rm -e PUBLIC_DOMAIN=:80
+          -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro"
+          caddy:2.8-alpine caddy validate --config /etc/caddy/Caddyfile
+
       - name: Build Docker image
         run: docker build -f deploy/Dockerfile.server -t lossless-audio-server:ci .
 

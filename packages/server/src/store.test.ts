@@ -8,20 +8,31 @@ test("video control keeps one enabled publisher per group", async () => {
   await store.createVideoPairing({ pairingId: "pair-b", pairingKeyCiphertext: "key-b", group: "studio", user: "bob" });
 
   await store.setVideoControl({ group: "studio", user: "alice", enabled: true, cameraDeviceId: "cam-a" });
-  await store.setVideoControl({ group: "studio", user: "bob", enabled: true, cameraDeviceId: "cam-b" });
+  await store.setVideoControl({
+    group: "studio", user: "bob", enabled: true, cameraDeviceId: "cam-b",
+    maxHeight: 720, maxFps: 30, maxBitrate: 3_000_000
+  });
 
   const controls = await store.listVideoControls();
   assert.equal(controls.find((control) => control.user === "alice")?.enabled, false);
   assert.equal(controls.find((control) => control.user === "bob")?.enabled, true);
   assert.equal(controls.find((control) => control.user === "bob")?.cameraDeviceId, "cam-b");
+  assert.equal(controls.find((control) => control.user === "bob")?.maxHeight, 720);
+  assert.equal(controls.find((control) => control.user === "bob")?.maxFps, 30);
 });
 
 test("new pairing disables persisted camera state", async () => {
   const store = new MemoryStore();
   await store.createVideoPairing({ pairingId: "old", pairingKeyCiphertext: "old-key", group: "studio", user: "alice" });
-  await store.setVideoControl({ group: "studio", user: "alice", enabled: true, cameraDeviceId: "cam-a" });
+  await store.setVideoControl({
+    group: "studio", user: "alice", enabled: true, cameraDeviceId: "cam-a",
+    maxHeight: 720, maxFps: 30, maxBitrate: 3_000_000
+  });
   const repaired = await store.createVideoPairing({ pairingId: "new", pairingKeyCiphertext: "new-key", group: "studio", user: "alice" });
 
   assert.equal(repaired.enabled, false);
   assert.equal(repaired.cameraDeviceId, undefined);
+  assert.equal(repaired.maxHeight, 0);
+  assert.equal(repaired.maxFps, 0);
+  assert.equal(repaired.maxBitrate, 0);
 });

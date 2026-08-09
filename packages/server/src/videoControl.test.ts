@@ -40,7 +40,10 @@ test("paired client polls persisted admin state and receives scoped MediaMTX dig
     width: 1920,
     height: 1080,
     fps: 60,
-    bitrate: 8_000_000
+    bitrate: 8_000_000,
+    captureWidth: 2560,
+    captureHeight: 1440,
+    captureFps: 60,
   })).toString("base64url");
 
   try {
@@ -48,11 +51,17 @@ test("paired client polls persisted admin state and receives scoped MediaMTX dig
     const first = decodeResponse(key, firstInput.nonce!, await service.poll(firstInput));
     assert.equal(first.enabled, false);
 
-    await service.setDesired("studio", "alice", true, "camera-a");
+    await service.setDesired({
+      group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a",
+      maxHeight: 720, maxFps: 30, maxBitrate: 3_000_000
+    });
     const secondInput = makePoll(key, pairing.pairingId, clientId, 2, status);
     const desired = decodeResponse(key, secondInput.nonce!, await service.poll(secondInput));
     assert.equal(desired.enabled, true);
     assert.equal(desired.cameraDeviceId, "camera-a");
+    assert.equal(desired.maxHeight, 720);
+    assert.equal(desired.maxFps, 30);
+    assert.equal(desired.maxBitrate, 3_000_000);
     assert.equal(desired.ingestPath, "ingest/SB_studio");
     assert.equal(desired.publishUser, `camera-${pairing.pairingId}`);
     assert.deepEqual(await service.activeGroups(), [{ group: "studio", groupPassword: "  room  secret  " }]);
@@ -82,6 +91,8 @@ test("paired client polls persisted admin state and receives scoped MediaMTX dig
     assert.equal(view?.capturing, true);
     assert.equal(view?.width, 1920);
     assert.equal(view?.fps, 60);
+    assert.equal(view?.captureHeight, 1440);
+    assert.equal(view?.maxHeight, 720);
     assert.equal(authWrites, 3, "steady-state polls must not rewrite global MediaMTX auth");
     await assert.rejects(() => service.poll(secondInput), /replayed/);
   } finally {

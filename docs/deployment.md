@@ -222,7 +222,7 @@ sudo cp -a /opt/lossless-audio \
 
 ### 浏览器页面可开但无视频
 
-检查 UDP `19091` 安全组、`PUBLIC_VIDEO_HOST` 是否为公网 IP，以及：
+检查 UDP `19091` 安全组、`PUBLIC_VIDEO_HOST` 是否为公网 IP。若页面显示 `RTCPeerConnection is not a constructor`，说明浏览器或 WebRTC 防泄漏扩展/策略禁用了 WebRTC；改用启用 WebRTC 的当前版 Edge/Chrome 或关闭该拦截。Caddy 对视频页面显式返回 `Connection-Allowlist: (response-origin);webrtc=allow`。然后检查：
 
 ```bash
 docker compose logs --tail=200 mediamtx server
@@ -234,7 +234,7 @@ docker compose logs --tail=200 mediamtx server
 
 ### 摄像头不启动
 
-确认用户仍在对应 SonoBus group、授权未撤销、管理员已选择并开启设备。Windows 不会抢占摄像头或自动换到另一台：若当前共享流低于真实 60 FPS，或设备已被其他程序独占，后台会显示原因并按最高 30 秒间隔重试；管理员可关闭占用程序或选择另一台。摄像头/网络恢复后无需重启 DAW。
+确认用户仍在对应 SonoBus group、授权未撤销、管理员已选择并开启设备。Windows 不会抢占摄像头或自动换到另一台：客户端选择当前可共享源中数据率最高的一路；设备被独占或共享模式失效时，后台会显示原因并按最高 30 秒间隔重试。后台的分辨率、FPS、码率均为输出上限，只会向下调整；摄像头/网络恢复后无需重启 DAW。
 
 ### 动态群组无音频
 

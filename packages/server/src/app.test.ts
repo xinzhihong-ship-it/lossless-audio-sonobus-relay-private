@@ -1921,14 +1921,29 @@ test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs",
       post(baseUrl, "/admin/video/control", adminToken, { group, user, enabled: true, cameraDeviceId: null }),
       /failed with 400/
     );
-    await post(baseUrl, "/admin/video/control", adminToken, { group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a" });
+    await assert.rejects(
+      post(baseUrl, "/admin/video/control", adminToken, {
+        group, user, enabled: true, cameraDeviceId: "camera-a", maxHeight: 999
+      }),
+      /failed with 400/
+    );
+    await post(baseUrl, "/admin/video/control", adminToken, {
+      group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a",
+      maxHeight: 720, maxFps: 30, maxBitrate: 3_000_000
+    });
     const response = await get<{
-      videoControls: Array<{ group: string; user: string; enabled: boolean; cameraDeviceId?: string }>;
+      videoControls: Array<{
+        group: string; user: string; enabled: boolean; cameraDeviceId?: string;
+        maxHeight: number; maxFps: number; maxBitrate: number;
+      }>;
       videoPaths: Array<{ name: string }>;
       videoUrls: { browserBase: string; rtspBase: string };
     }>(baseUrl, "/admin/connections", adminToken);
     assert.equal(response.videoControls[0]?.enabled, true);
     assert.equal(response.videoControls[0]?.cameraDeviceId, "camera-a");
+    assert.equal(response.videoControls[0]?.maxHeight, 720);
+    assert.equal(response.videoControls[0]?.maxFps, 30);
+    assert.equal(response.videoControls[0]?.maxBitrate, 3_000_000);
     assert.equal(response.videoPaths[0]?.name, "SB_studio");
     assert.equal(response.videoUrls.browserBase, "http://video.example.test:19090");
     assert.equal(response.videoUrls.rtspBase, "rtsp://video.example.test:19092");
@@ -1938,6 +1953,9 @@ test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs",
     assert.match(html, /无需输入授权码/);
     assert.doesNotMatch(html, /SBPAIR1|生成配对码/);
     assert.match(html, /请选择摄像头/);
+    assert.match(html, /分辨率上限/);
+    assert.match(html, /帧率上限/);
+    assert.match(html, /码率上限/);
     assert.doesNotMatch(html, /自动选择/);
     assert.match(html, /OBS 媒体源 RTSP/);
     assert.doesNotMatch(html, /SBV1|pendingFrame|JPEG/);

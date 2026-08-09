@@ -51,6 +51,9 @@ export type VideoControlRecord = {
   groupPasswordCiphertext?: string;
   enabled: boolean;
   cameraDeviceId?: string;
+  maxHeight: number;
+  maxFps: number;
+  maxBitrate: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -65,6 +68,9 @@ export type SetVideoControlInput = {
   user: string;
   enabled: boolean;
   cameraDeviceId?: string | null;
+  maxHeight?: number;
+  maxFps?: number;
+  maxBitrate?: number;
 };
 
 export interface Store {
@@ -192,6 +198,9 @@ export class MemoryStore implements Store {
     const control: VideoControlRecord = {
       ...input,
       enabled: false,
+      maxHeight: 0,
+      maxFps: 0,
+      maxBitrate: 0,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now
     };
@@ -217,6 +226,9 @@ export class MemoryStore implements Store {
       ...existing,
       enabled: input.enabled,
       cameraDeviceId: input.cameraDeviceId === undefined ? existing.cameraDeviceId : input.cameraDeviceId ?? undefined,
+      maxHeight: input.maxHeight ?? existing.maxHeight,
+      maxFps: input.maxFps ?? existing.maxFps,
+      maxBitrate: input.maxBitrate ?? existing.maxBitrate,
       updatedAt: now
     };
     this.videoControls.set(key, updated);
@@ -279,6 +291,9 @@ export class PostgresStore implements Store {
         group_password_ciphertext text,
         enabled boolean not null default false,
         camera_device_id text,
+        max_video_height integer not null default 0,
+        max_video_fps double precision not null default 0,
+        max_video_bitrate integer not null default 0,
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now(),
         primary key (group_name, user_name)
@@ -294,6 +309,9 @@ export class PostgresStore implements Store {
         on video_controls (group_name) where enabled = true;
 
       alter table video_controls add column if not exists group_password_ciphertext text;
+      alter table video_controls add column if not exists max_video_height integer not null default 0;
+      alter table video_controls add column if not exists max_video_fps double precision not null default 0;
+      alter table video_controls add column if not exists max_video_bitrate integer not null default 0;
     `);
   }
 
@@ -397,6 +415,9 @@ export class PostgresStore implements Store {
          group_password_ciphertext = excluded.group_password_ciphertext,
          enabled = false,
          camera_device_id = null,
+         max_video_height = 0,
+         max_video_fps = 0,
+         max_video_bitrate = 0,
          updated_at = now()
        returning *`,
       [input.group, input.user, input.pairingId, input.pairingKeyCiphertext, input.groupPasswordCiphertext]
@@ -419,10 +440,19 @@ export class PostgresStore implements Store {
         `update video_controls set
            enabled = $3,
            camera_device_id = case when $4::boolean then $5 else camera_device_id end,
+           max_video_height = case when $6::boolean then $7 else max_video_height end,
+           max_video_fps = case when $8::boolean then $9 else max_video_fps end,
+           max_video_bitrate = case when $10::boolean then $11 else max_video_bitrate end,
            updated_at = now()
          where group_name = $1 and user_name = $2
          returning *`,
-        [input.group, input.user, input.enabled, input.cameraDeviceId !== undefined, input.cameraDeviceId ?? null]
+        [
+          input.group, input.user, input.enabled,
+          input.cameraDeviceId !== undefined, input.cameraDeviceId ?? null,
+          input.maxHeight !== undefined, input.maxHeight ?? 0,
+          input.maxFps !== undefined, input.maxFps ?? 0,
+          input.maxBitrate !== undefined, input.maxBitrate ?? 0
+        ]
       );
       if (!result.rows[0]) {
         throw new Error("Video client is not paired.");
@@ -488,6 +518,9 @@ function mapVideoControl(row: Record<string, unknown>): VideoControlRecord {
     groupPasswordCiphertext: optionalString(row.group_password_ciphertext),
     enabled: Boolean(row.enabled),
     cameraDeviceId: optionalString(row.camera_device_id),
+    maxHeight: Number(row.max_video_height ?? 0),
+    maxFps: Number(row.max_video_fps ?? 0),
+    maxBitrate: Number(row.max_video_bitrate ?? 0),
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at)).toISOString()
   };

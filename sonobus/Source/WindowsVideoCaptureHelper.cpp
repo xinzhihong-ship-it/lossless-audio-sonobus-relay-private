@@ -18,6 +18,7 @@
 #include <winrt/Windows.Media.MediaProperties.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -95,6 +96,14 @@ uint32_t numberOption(const std::vector<std::wstring>& args, const wchar_t* name
     catch (...) { return fallback; }
 }
 
+double doubleOption(const std::vector<std::wstring>& args, const wchar_t* name, double fallback)
+{
+    const auto value = option(args, name);
+    if (value.empty()) return fallback;
+    try { return std::stod(value); }
+    catch (...) { return fallback; }
+}
+
 double frameRate(const MediaFrameFormat& format)
 {
     const auto ratio = format.FrameRate();
@@ -115,7 +124,18 @@ Mode currentMode(const MediaFrameSource& source)
     return video ? Mode { video.Width(), video.Height(), frameRate(format), format } : Mode {};
 }
 
-CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth = 0, uint32_t requestedHeight = 0)
+bool isPreferredMode(const Mode& candidate, const Mode& current)
+{
+    const auto candidateRate = static_cast<double>(candidate.width) * candidate.height * candidate.fps;
+    const auto currentRate = static_cast<double>(current.width) * current.height * current.fps;
+    if (candidateRate != currentRate) return candidateRate > currentRate;
+    const auto candidatePixels = static_cast<uint64_t>(candidate.width) * candidate.height;
+    const auto currentPixels = static_cast<uint64_t>(current.width) * current.height;
+    return candidatePixels != currentPixels ? candidatePixels > currentPixels : candidate.fps > current.fps;
+}
+
+CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth = 0, uint32_t requestedHeight = 0,
+                                double requestedFps = 0.0)
 {
     const auto group = findGroup(deviceId);
     if (!group) throw hresult_error(HRESULT_FROM_WIN32(ERROR_NOT_FOUND), L"The selected camera source group is unavailable.");
@@ -133,17 +153,19 @@ CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth
     {
         const auto source = entry.Value();
         if (source.Info().SourceKind() != MediaFrameSourceKind::Color) continue;
-        if (!session.source || source.Info().MediaStreamType() == MediaStreamType::VideoPreview)
+        const auto mode = currentMode(source);
+        if (!session.source || isPreferredMode(mode, session.mode))
+        {
             session.source = source;
-        if (source.Info().MediaStreamType() == MediaStreamType::VideoPreview) break;
+            session.mode = mode;
+        }
     }
     if (!session.source) throw hresult_error(E_FAIL, L"No color camera source was exposed.");
-
-    session.mode = currentMode(session.source);
-    if (!session.mode.width || !session.mode.height || session.mode.fps < 59.0)
-        throw hresult_error(MF_E_INVALIDMEDIATYPE, L"The current shared camera stream is not 60 FPS.");
+    if (!session.mode.width || !session.mode.height || session.mode.fps <= 0.0)
+        throw hresult_error(MF_E_INVALIDMEDIATYPE, L"The current shared camera stream has no valid frame rate.");
     if (requestedWidth && requestedHeight
-        && (session.mode.width != requestedWidth || session.mode.height != requestedHeight))
+        && (session.mode.width != requestedWidth || session.mode.height != requestedHeight
+            || (requestedFps > 0.0 && std::abs(session.mode.fps - requestedFps) > 1.0)))
         throw hresult_error(MF_E_INVALIDMEDIATYPE, L"The requested mode is not the current shared camera mode.");
     return session;
 }
@@ -192,9 +214,9 @@ void emitError(HRESULT code)
     std::cout << "SONOBUS_ERROR=" << category << ":0x" << std::hex << static_cast<uint32_t>(code) << std::dec << std::endl;
 }
 
-CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t height)
+CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t height, double fps)
 {
-    auto session = openSharedCamera(deviceId, width, height);
+    auto session = openSharedCamera(deviceId, width, height, fps);
     session.state = std::make_shared<FrameState>();
     session.failedToken = session.capture.Failed([state = session.state](const MediaCapture&, const MediaCaptureFailedEventArgs& args)
     {
@@ -306,7 +328,7 @@ private:
 };
 
 ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstring>& outputArguments,
-                         uint32_t width, uint32_t height)
+                         uint32_t width, uint32_t height, double fps)
 {
     SECURITY_ATTRIBUTES security { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
     HANDLE inputRead = INVALID_HANDLE_VALUE;
@@ -324,7 +346,7 @@ ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstr
         ffmpeg, L"-hide_banner", L"-loglevel", L"warning", L"-nostdin",
         L"-f", L"rawvideo", L"-pixel_format", L"nv12", L"-video_size",
         std::to_wstring(width) + L"x" + std::to_wstring(height),
-        L"-framerate", L"60", L"-use_wallclock_as_timestamps", L"1", L"-i", L"pipe:0"
+        L"-framerate", std::to_wstring(fps), L"-use_wallclock_as_timestamps", L"1", L"-i", L"pipe:0"
     };
     arguments.insert(arguments.end(), outputArguments.begin(), outputArguments.end());
     std::wstring command;
@@ -405,13 +427,15 @@ int publish(const std::vector<std::wstring>& args)
     const auto ffmpeg = option(args, L"--ffmpeg");
     const auto width = numberOption(args, L"--width", 0);
     const auto height = numberOption(args, L"--height", 0);
+    const auto fps = doubleOption(args, L"--fps", 0.0);
     const auto separator = std::find(args.begin(), args.end(), L"--");
-    if (device.empty() || ffmpeg.empty() || !width || !height || separator == args.end()) return 2;
+    if (device.empty() || ffmpeg.empty() || !width || !height || fps <= 0.0 || separator == args.end()) return 2;
     std::vector<std::wstring> outputArguments(separator + 1, args.end());
 
-    auto camera = startReader(hstring(device), width, height);
-    auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height);
-    std::cout << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height << "\n" << std::flush;
+    auto camera = startReader(hstring(device), width, height, fps);
+    auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height, camera.mode.fps);
+    std::cout << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height
+              << "\ncapture_nominal_fps=" << camera.mode.fps << "\n" << std::flush;
 
     uint64_t lastSequence = 0;
     uint64_t frames = 0;
@@ -454,9 +478,10 @@ int publish(const std::vector<std::wstring>& args)
         {
             const auto measuredFps = frames / elapsed;
             std::cout << "capture_fps=" << measuredFps << '\n' << std::flush;
-            if (measuredFps < 59.0)
+            const auto minimumFps = std::max(1.0, camera.mode.fps - 1.0);
+            if (measuredFps < minimumFps)
             {
-                std::cout << "SONOBUS_ERROR=unavailable:shared-frame-rate-below-60" << std::endl;
+                std::cout << "SONOBUS_ERROR=unavailable:shared-frame-rate-below-expected" << std::endl;
                 return 3;
             }
             frames = 0;

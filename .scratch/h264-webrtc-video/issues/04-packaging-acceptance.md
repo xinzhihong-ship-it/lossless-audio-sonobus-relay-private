@@ -10,7 +10,7 @@ Package the helper/runtime in Windows and macOS installers, build all CI artifac
 
 - Installed clients work without separately installing an encoder runtime.
 - Browser end-to-end latency is below 500 ms in the acceptance setup.
-- Highest available 60 FPS mode is reported and used.
+- Highest current shared source is reported and used by default; persisted administrator limits only reduce output resolution, FPS, or bitrate.
 - Five viewers and OBS Media Source play simultaneously without audio glitches.
 - Temporary deployment credentials are removed.
 
@@ -55,3 +55,10 @@ Package the helper/runtime in Windows and macOS installers, build all CI artifac
 - Production deployment is healthy with safety copy `/opt/lossless-audio-safety-sharedcam-20260810-022551`, PostgreSQL dump, and rollback images `sonobus-server:rollback-sharedcam-20260810-022551` / `sonobus-connection-server:rollback-sharedcam-20260810-022551`. Checks: health/admin loopback `200`, public admin `404`, invalid enrollment `403`, removed pairing route `404`, connection-admin unauthenticated `401` / authenticated `200`, no host `18098/9997`, `19094` loopback-only.
 - Production admin data at 1365/1024/640 px had `scrollWidth == viewport`, zero overflowing elements, and camera controls wrapped from 390 px to 582 px without clipping. Current legacy client `xiaomo / Administrator` remains online with zero reported cameras, as expected until the new installer is used.
 - The temporary deployment key was removed, reuse was denied, and local key/JWT files were deleted. Pending physical acceptance: install the new Windows package and verify a real camera shared concurrently with Teams/OBS/Camera, exclusive-owner error/recovery, actual 60 FPS source mode, H.264 publication, group audio sync and cold-start latency.
+
+### 2026-08-10 physical Windows follow-up and source-native policy
+- Physical Windows client automatic enrollment succeeded: `xiaomo / Administrator` became video-control online and reported one `Integrated Camera`. This confirms the pairing, credential storage, signed polling, device enumeration and administrator command path.
+- The first strict-60 build then correctly exposed a hardware-policy mismatch: the selected integrated camera's current `SharedReadOnly` stream was below 59 FPS, so no publisher started. The administrator chose to replace the fixed 60/30 gate with source-native highest-throughput capture and persisted downward-only output caps.
+- New behavior selects the highest width×height×FPS current color source without `SetFormatAsync`, publishes it unchanged by default, and lets the administrator cap resolution, FPS and bitrate. Scaling never enlarges; the `select` filter only drops frames; bitrate is clamped to the automatic source-derived ceiling.
+- The observed viewer `RTCPeerConnection is not a constructor` is browser-side WebRTC blocking. WebRTC remains the only browser transport; Caddy now sends the explicit Chromium `Connection-Allowlist` WebRTC permission. Privacy extensions/policies that disable WebRTC must still be turned off.
+- Pending: final Windows/server CI, deploy the schema/Caddy update, install the replacement Windows package, and re-run physical stream/OBS/browser/shared-camera acceptance.

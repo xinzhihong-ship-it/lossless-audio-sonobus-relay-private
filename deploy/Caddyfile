@@ -1,7 +1,8 @@
 {$PUBLIC_DOMAIN} {
   encode zstd gzip
   route {
-    @video path_regexp video ^/SB_[^/]+(?:/.*)?$
+    @video path_regexp video ^/SB_[^/]+(/.*)?$
+    header @video Connection-Allowlist "(response-origin);webrtc=allow"
     reverse_proxy @video mediamtx:8889
 
     @admin path /admin /admin/*
@@ -17,7 +18,8 @@
 :8081 {
   encode zstd gzip
   route {
-    @video path_regexp video ^/SB_[^/]+(?:/.*)?$
+    @video path_regexp video ^/SB_[^/]+(/.*)?$
+    header @video Connection-Allowlist "(response-origin);webrtc=allow"
     reverse_proxy @video mediamtx:8889
 
     reverse_proxy server:8080 {

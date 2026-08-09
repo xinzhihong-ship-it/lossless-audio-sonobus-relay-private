@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ConnectionServerAdmin } from "./connectionServerAdmin.js";
 import { ingestVideoPath, videoRoom, type MediaMtxAdmin, type MediaMtxInternalUser } from "./mediaMtx.js";
-import type { Store, VideoControlRecord } from "./store.js";
+import type { SetVideoControlInput, Store, VideoControlRecord } from "./store.js";
 
 const SESSION_TTL_MS = 15_000;
 const ENROLLMENT_TTL_MS = 60_000;
@@ -19,6 +19,9 @@ export type VideoClientStatus = {
   height?: number;
   fps?: number;
   bitrate?: number;
+  captureWidth?: number;
+  captureHeight?: number;
+  captureFps?: number;
   error?: string;
 };
 
@@ -204,6 +207,9 @@ export class VideoControlService {
         user: control.user,
         enabled: control.enabled,
         cameraDeviceId: control.cameraDeviceId,
+        maxHeight: control.maxHeight,
+        maxFps: control.maxFps,
+        maxBitrate: control.maxBitrate,
         createdAt: control.createdAt,
         updatedAt: control.updatedAt,
         online: Boolean(session),
@@ -216,6 +222,9 @@ export class VideoControlService {
         height: session?.status.height,
         fps: session?.status.fps,
         bitrate: session?.status.bitrate,
+        captureWidth: session?.status.captureWidth,
+        captureHeight: session?.status.captureHeight,
+        captureFps: session?.status.captureFps,
         error: session?.status.error
       };
     });
@@ -233,8 +242,8 @@ export class VideoControlService {
       }));
   }
 
-  async setDesired(group: string, user: string, enabled: boolean, cameraDeviceId?: string | null): Promise<VideoControlRecord> {
-    const updated = await this.store.setVideoControl({ group, user, enabled, cameraDeviceId });
+  async setDesired(input: SetVideoControlInput): Promise<VideoControlRecord> {
+    const updated = await this.store.setVideoControl(input);
     await this.syncMediaMtxAuth();
     await this.notifyStateChange();
     return updated;
@@ -414,6 +423,9 @@ function desiredPayload(control: VideoControlRecord, session: ControlSession, rt
     revision: control.updatedAt,
     enabled: control.enabled,
     cameraDeviceId: control.cameraDeviceId,
+    maxHeight: control.maxHeight,
+    maxFps: control.maxFps,
+    maxBitrate: control.maxBitrate,
     room,
     ingestPath,
     rtspPort,
@@ -463,6 +475,9 @@ function cleanStatus(value: Record<string, unknown>): VideoClientStatus {
     height: boundedNumber(value.height, 1, 16_384),
     fps: boundedNumber(value.fps, 0, 240),
     bitrate: boundedNumber(value.bitrate, 0, 1_000_000_000),
+    captureWidth: boundedNumber(value.captureWidth, 1, 16_384),
+    captureHeight: boundedNumber(value.captureHeight, 1, 16_384),
+    captureFps: boundedNumber(value.captureFps, 0, 240),
     error: cleanString(value.error, 500) || undefined
   };
 }
