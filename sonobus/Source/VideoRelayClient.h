@@ -6,8 +6,10 @@
 #include <JuceHeader.h>
 #include <juce_video/juce_video.h>
 
-class VideoRelayClient final : private juce::Thread,
-                               private juce::CameraDevice::Listener
+class VideoRelayClient final : private juce::Thread
+#if SONOBUS_CAMERA_SUPPORTED
+                               , private juce::CameraDevice::Listener
+#endif
 {
 public:
     enum class Status
@@ -36,7 +38,9 @@ public:
 
 private:
     void run() override;
+#if SONOBUS_CAMERA_SUPPORTED
     void imageReceived(const juce::Image& image) override;
+#endif
 
     bool connectWebSocket();
     bool sendFrame(const juce::MemoryBlock& jpeg);
@@ -62,7 +66,9 @@ private:
     juce::uint32 frameNumber = 0;
 
     std::atomic<Status> status { Status::idle };
+#if SONOBUS_CAMERA_SUPPORTED
     std::unique_ptr<juce::CameraDevice> camera;
+#endif
     juce::StreamingSocket socket;
     juce::DatagramSocket mediaSocket;
     juce::uint32 mediaFrameNumber = 1;

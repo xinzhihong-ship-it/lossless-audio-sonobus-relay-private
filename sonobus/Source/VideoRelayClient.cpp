@@ -32,7 +32,11 @@ VideoRelayClient::~VideoRelayClient()
 
 juce::StringArray VideoRelayClient::getCameraDevices()
 {
+#if SONOBUS_CAMERA_SUPPORTED
     return juce::CameraDevice::getAvailableDevices();
+#else
+    return {};
+#endif
 }
 
 void VideoRelayClient::start(const juce::String& host_,
@@ -75,6 +79,11 @@ void VideoRelayClient::stop()
 
 void VideoRelayClient::run()
 {
+#if !SONOBUS_CAMERA_SUPPORTED
+    setStatus(Status::cameraUnavailable);
+    while (! threadShouldExit())
+        wait(500);
+#else
     while (! threadShouldExit())
     {
         juce::String localPreferredCamera;
@@ -181,8 +190,10 @@ void VideoRelayClient::run()
             wait(1000);
         }
     }
+#endif
 }
 
+#if SONOBUS_CAMERA_SUPPORTED
 void VideoRelayClient::imageReceived(const juce::Image& image)
 {
     const auto jpeg = encodeJpeg(image);
@@ -193,6 +204,7 @@ void VideoRelayClient::imageReceived(const juce::Image& image)
     latestJpeg = jpeg;
     ++frameNumber;
 }
+#endif
 
 bool VideoRelayClient::connectWebSocket()
 {

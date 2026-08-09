@@ -202,6 +202,14 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         AOO_TIMEFILTER_CHECK=0
         AOO_STATIC)
 
+    if (APPLE OR WIN32)
+        list (APPEND PLAT_COMPILE_DEFS
+            JUCE_USE_CAMERA=1
+            SONOBUS_CAMERA_SUPPORTED=1)
+    else()
+        list (APPEND PLAT_COMPILE_DEFS SONOBUS_CAMERA_SUPPORTED=0)
+    endif()
+
     set(PlatSourceFiles
         Source/CrossPlatformUtils.h
       )
