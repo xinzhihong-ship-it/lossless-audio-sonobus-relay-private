@@ -19,3 +19,4 @@ Replace the single fixed-group web bridge with on-demand headless group subscrip
 - `GroupMediaManager` creates one headless bridge and muxer per active group, emits 48 kHz stereo PCM, and publishes Opus 160 kbps beside copied H.264.
 - Lifecycle and stale-worker tests pass; local FFprobe confirmed H.264 Baseline plus Opus stereo on the stable public path.
 - Pending resolution evidence: simultaneous browser/OBS playback with confirmed synchronization and no audio feedback.
+- Public synthetic-source acceptance proved simultaneous H.264+Opus playback in five browsers and OBS with zero loss/concealment in a 30-second stable window, but it did not exercise a real SonoBus group mix.

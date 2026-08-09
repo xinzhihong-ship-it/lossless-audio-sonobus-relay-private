@@ -16,4 +16,5 @@ Replace the Node JPEG relay with MediaMTX deployment, WebRTC/WHEP browser playba
 
 ### 2026-08-09 resolution
 - MediaMTX 1.20.0 owns RTSP/WebRTC fan-out; JPEG/SBV1 relay code is removed.
-- URL, auth, unavailable-stream and dynamic-path tests pass; server bundle CI `31310828230` passed.
+- URL, auth, unavailable-stream and dynamic-path tests pass; latest server bundle CI `31314751416` passed at private commit `5909a08`.
+- Production deployment on `82.156.228.183` passed health, API auth, public WebRTC/RTSP, loopback-admin, restart and five-viewer-plus-OBS checks.
