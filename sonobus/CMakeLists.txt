@@ -15,13 +15,13 @@ if (WIN32)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# If we are compiling for Mac OS we want to target OS versions down to 10.9
+# Match the bundled FFmpeg helper's oldest supported macOS release.
 option(UniversalBinary "Build universal binary for mac" ON)
 option(SONOBUS_ENABLE_ASIO "Enable ASIO support on Windows. Requires Steinberg ASIO SDK at ../asiosdk/common." ON)
 set(SONOBUS_FFMPEG_PATH "" CACHE FILEPATH "Bundled FFmpeg executable for H.264 camera publishing")
 
 if (APPLE)
-    set (CMAKE_OSX_DEPLOYMENT_TARGET "10.10" CACHE INTERNAL "")
+    set (CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE INTERNAL "")
     if (UniversalBinary)
         set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE INTERNAL "")
         #set(CMAKE_OSX_ARCHITECTURES arm64 x86_64)        

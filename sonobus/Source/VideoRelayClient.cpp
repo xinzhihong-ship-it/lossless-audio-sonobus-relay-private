@@ -396,6 +396,7 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
     juce::ignoreUnused(ffmpegPath);
     return result;
 #endif
+#if JUCE_MAC || JUCE_WINDOWS
     juce::ChildProcess probe;
     if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) return result;
     if (! probe.waitForProcessToFinish(5000)) probe.kill();
@@ -451,6 +452,7 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
 #if JUCE_WINDOWS
     if (pendingName.isNotEmpty()) result.add({ pendingName, pendingName });
 #endif
+#endif
     return result;
 }
 
@@ -473,6 +475,7 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::get60FpsCameraModes(
     juce::ignoreUnused(ffmpegPath, cameraDeviceId);
     return result;
 #endif
+#if JUCE_MAC || JUCE_WINDOWS
     juce::ChildProcess probe;
     if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) return result;
     if (! probe.waitForProcessToFinish(5000)) probe.kill();
@@ -491,6 +494,7 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::get60FpsCameraModes(
         const auto rightPixels = static_cast<juce::int64>(right.width) * right.height;
         return leftPixels == rightPixels ? left.width > right.width : leftPixels > rightPixels;
     });
+#endif
     return result;
 }
 

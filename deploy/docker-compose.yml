@@ -48,6 +48,12 @@ services:
       MEDIA_MUXER_PASSWORD: ${MEDIA_MUXER_PASSWORD}
     ports:
       - "${UDP_RELAY_PORT:-9000}:${UDP_RELAY_PORT:-9000}/udp"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
     depends_on:
       - postgres
       - connection-server

@@ -75,5 +75,10 @@ architectures="$(lipo -archs "${OUT}/ffmpeg")"
 [[ " ${architectures} " == *" x86_64 "* && " ${architectures} " == *" arm64 "* ]]
 "${OUT}/ffmpeg" -hide_banner -encoders > "${WORK}/encoders.txt" 2>&1
 grep -q h264_videotoolbox "${WORK}/encoders.txt"
+"${OUT}/ffmpeg" -hide_banner -devices > "${WORK}/devices.txt" 2>&1
+grep -q avfoundation "${WORK}/devices.txt"
+"${OUT}/ffmpeg" -hide_banner -muxers > "${WORK}/muxers.txt" 2>&1
+grep -q ' null ' "${WORK}/muxers.txt"
+grep -q ' rtsp ' "${WORK}/muxers.txt"
 shasum -a 256 "${OUT}/ffmpeg"
 echo "Built FFmpeg ${FFMPEG_VERSION}: ${architectures}"

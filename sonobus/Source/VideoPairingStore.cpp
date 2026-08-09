@@ -81,8 +81,8 @@ bool VideoPairingStore::save(const juce::String& accountName,
     const auto userName = pairingId.toWideCharPointer();
     CREDENTIALW credential{};
     credential.Type = CRED_TYPE_GENERIC;
-    credential.TargetName = const_cast<LPWSTR>(target.getAddress());
-    credential.UserName = const_cast<LPWSTR>(userName.getAddress());
+    credential.TargetName = const_cast<LPWSTR>(target);
+    credential.UserName = const_cast<LPWSTR>(userName);
     credential.CredentialBlobSize = static_cast<DWORD>(key.getSize());
     credential.CredentialBlob = const_cast<LPBYTE>(static_cast<const BYTE*>(key.getData()));
     credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
@@ -121,7 +121,7 @@ bool VideoPairingStore::load(const juce::String& accountName,
 #elif JUCE_WINDOWS
     PCREDENTIALW credential = nullptr;
     const auto target = name.toWideCharPointer();
-    if (CredReadW(target.getAddress(), CRED_TYPE_GENERIC, 0, &credential) == FALSE || credential == nullptr)
+    if (CredReadW(target, CRED_TYPE_GENERIC, 0, &credential) == FALSE || credential == nullptr)
         return false;
     key.replaceAll(credential->CredentialBlob, credential->CredentialBlobSize);
     CredFree(credential);
@@ -142,7 +142,7 @@ void VideoPairingStore::remove(const juce::String& accountName, const juce::Stri
     CFRelease(query);
 #elif JUCE_WINDOWS
     const auto target = name.toWideCharPointer();
-    CredDeleteW(target.getAddress(), CRED_TYPE_GENERIC, 0);
+    CredDeleteW(target, CRED_TYPE_GENERIC, 0);
 #else
     juce::ignoreUnused(accountName, pairingId);
 #endif
