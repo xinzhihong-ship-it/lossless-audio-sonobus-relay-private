@@ -2004,7 +2004,7 @@ const adminPageHtml = String.raw`<!doctype html>
       background: #111418;
     }
     main {
-      max-width: 1120px;
+      max-width: 1480px;
       margin: 0 auto;
       padding: 24px;
       box-sizing: border-box;
@@ -2021,9 +2021,10 @@ const adminPageHtml = String.raw`<!doctype html>
       align-items: center;
       margin-bottom: 18px;
     }
-    .badge {
+    .badge, .state-badge {
       display: inline-flex;
       align-items: center;
+      width: fit-content;
       min-height: 26px;
       padding: 0 10px;
       border: 1px solid #315b3d;
@@ -2033,6 +2034,16 @@ const adminPageHtml = String.raw`<!doctype html>
       font-size: 12px;
       font-weight: 600;
       white-space: nowrap;
+    }
+    .state-badge.waiting {
+      border-color: #72561f;
+      background: #261f12;
+      color: #f2cd78;
+    }
+    .state-badge.offline, .state-badge.neutral {
+      border-color: #46515d;
+      background: #1b2229;
+      color: #b8c2cc;
     }
     h2 {
       font-size: 17px;
@@ -2111,51 +2122,92 @@ const adminPageHtml = String.raw`<!doctype html>
     }
     table {
       width: 100%;
-      min-width: 1040px;
+      min-width: 720px;
       border-collapse: collapse;
       font-size: 13px;
     }
     th, td {
       border-bottom: 1px solid #2b333c;
-      padding: 9px 8px;
+      padding: 10px;
       text-align: left;
-      vertical-align: middle;
-    }
-    td {
-      max-width: 180px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    td:nth-child(7) {
-      max-width: none;
-      white-space: normal;
-    }
-    td:nth-child(6) {
-      max-width: 260px;
-      min-width: 220px;
-      white-space: normal;
-      overflow: visible;
-      text-overflow: clip;
-    }
-    .relay-stats {
-      display: grid;
-      gap: 3px;
-      line-height: 1.25;
-      white-space: normal;
-    }
-    .relay-stats span {
-      display: block;
-      white-space: nowrap;
+      vertical-align: top;
     }
     th {
       color: #b8c2cc;
       font-weight: 600;
     }
+    td {
+      overflow-wrap: anywhere;
+    }
+    .connections-table {
+      min-width: 1080px;
+      table-layout: fixed;
+    }
+    .connections-table th:nth-child(1) { width: 17%; }
+    .connections-table th:nth-child(2) { width: 21%; }
+    .connections-table th:nth-child(3) { width: 13%; }
+    .connections-table th:nth-child(4) { width: 32%; }
+    .connections-table th:nth-child(5) { width: 17%; }
+    .connections-table td {
+      max-width: none;
+      overflow: visible;
+      white-space: normal;
+      text-overflow: clip;
+    }
+    .member-meta, .connection-meta, .relay-stats, .camera-actions {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+    .member-meta strong {
+      color: #edf1f5;
+      font-size: 14px;
+    }
+    .meta-line, .camera-help, .camera-details {
+      color: #95a0aa;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .connection-head {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .connection-head strong {
+      min-width: 0;
+    }
+    .relay-stats {
+      line-height: 1.3;
+    }
+    .relay-stats span {
+      display: block;
+    }
     .actions {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    .connection-actions button {
+      flex: 1 1 92px;
+    }
+    .camera-control-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .camera-select {
+      flex: 1 1 220px;
+      width: 100%;
+      min-width: 0;
+    }
+    .camera-control-row button {
+      flex: 0 0 auto;
+    }
+    .camera-actions > button {
+      justify-self: start;
     }
     .toolbar {
       align-items: center;
@@ -2183,7 +2235,9 @@ const adminPageHtml = String.raw`<!doctype html>
       margin-top: 10px;
       color: #a7d7ff;
       font-size: 13px;
+      line-height: 1.45;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .status.ok {
       color: #a7e0b5;
@@ -2199,20 +2253,52 @@ const adminPageHtml = String.raw`<!doctype html>
     .muted {
       color: #95a0aa;
     }
+    @media (max-width: 1100px) {
+      .connections-wrap {
+        overflow: visible;
+        border: 0;
+      }
+      .connections-table, .connections-table tbody {
+        display: block;
+        min-width: 0;
+      }
+      .connections-table thead {
+        display: none;
+      }
+      .connections-table tr {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 12px 18px;
+        border: 1px solid #2b333c;
+        border-radius: 6px;
+        margin: 10px 0;
+        padding: 12px;
+      }
+      .connections-table td {
+        display: block;
+        border: 0;
+        padding: 0;
+      }
+      .connections-table td::before {
+        content: attr(data-label);
+        display: block;
+        margin-bottom: 5px;
+        color: #95a0aa;
+        font-size: 12px;
+      }
+      .connections-table td[data-label="摄像头"],
+      .connections-table td[data-label="操作"],
+      .connections-table td[colspan] {
+        grid-column: 1 / -1;
+      }
+    }
     @media (max-width: 760px) {
       main {
         padding: 16px;
       }
-      input {
+      input, input.small, #baseUrl {
         width: 100%;
         min-width: 0;
-      }
-      input.small {
-        width: 100%;
-        min-width: 0;
-      }
-      #baseUrl {
-        width: 100%;
       }
       .page-head {
         display: block;
@@ -2232,37 +2318,47 @@ const adminPageHtml = String.raw`<!doctype html>
       .toolbar button {
         width: 100%;
       }
-      .table-wrap {
-        overflow-x: visible;
+      .bans-wrap {
+        overflow: visible;
         border: 0;
       }
-      table {
+      .bans-table, .bans-table tbody {
+        display: block;
         min-width: 0;
       }
-      table, thead, tbody, th, td, tr {
-        display: block;
-      }
-      thead {
+      .bans-table thead {
         display: none;
       }
-      tr {
+      .bans-table tr {
+        display: block;
         border: 1px solid #2b333c;
         border-radius: 6px;
         margin: 10px 0;
         padding: 8px;
       }
-      td {
+      .bans-table td {
+        display: block;
         border: 0;
         padding: 6px 0;
-        max-width: none;
-        white-space: normal;
-        overflow-wrap: anywhere;
       }
-      td::before {
+      .bans-table td::before {
         content: attr(data-label);
         display: block;
         color: #95a0aa;
         font-size: 12px;
+      }
+    }
+    @media (max-width: 640px) {
+      .connections-table tr {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .connections-table td[data-label="摄像头"],
+      .connections-table td[data-label="操作"] {
+        grid-column: auto;
+      }
+      .camera-control-row button, .connection-actions button {
+        width: 100%;
+        flex-basis: 100%;
       }
     }
   </style>
@@ -2314,24 +2410,19 @@ const adminPageHtml = String.raw`<!doctype html>
         <span id="connectionSummary" class="muted">未刷新</span>
       </div>
       <div id="connectionStatus" class="status"></div>
-      <div class="table-wrap">
-        <table>
+      <div class="table-wrap connections-wrap">
+        <table class="connections-table">
           <thead>
             <tr>
-              <th>类型</th>
-              <th>房间/群组</th>
-              <th>用户</th>
-              <th>IP</th>
-              <th>端口</th>
-              <th>中继包</th>
-              <th>最后活跃</th>
+              <th>成员</th>
+              <th>连接</th>
+              <th>中继</th>
               <th>摄像头</th>
-              <th>状态</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody id="connectionsBody">
-            <tr><td colspan="10" class="muted">登录后点击刷新。</td></tr>
+            <tr><td colspan="5" class="muted">登录后点击刷新。</td></tr>
           </tbody>
         </table>
       </div>
@@ -2344,8 +2435,8 @@ const adminPageHtml = String.raw`<!doctype html>
       </div>
       <div class="subtle">误封后可在这里解除。封禁保存在数据库里，Docker 重启后会自动恢复。</div>
       <div id="banStatus" class="status"></div>
-      <div class="table-wrap">
-        <table>
+      <div class="table-wrap bans-wrap">
+        <table class="bans-table">
           <thead>
             <tr>
               <th>类型</th>
@@ -2380,15 +2471,21 @@ const adminPageHtml = String.raw`<!doctype html>
     const customBanMinutes = document.getElementById("customBanMinutes");
     let currentVideoControls = [];
     let currentVideoUrls = {};
+    let connectionRefreshPromise;
+    let lastConnectionsFingerprint = "";
+    let authGeneration = 0;
 
     baseUrlInput.value = location.origin;
 
     document.getElementById("loginBtn").addEventListener("click", login);
     document.getElementById("logoutBtn").addEventListener("click", logout);
-    document.getElementById("refreshBtn").addEventListener("click", refreshConnections);
+    document.getElementById("refreshBtn").addEventListener("click", () => refreshConnections());
     document.getElementById("refreshBansBtn").addEventListener("click", refreshBans);
     banSeconds.addEventListener("change", updateBanDurationControls);
     updateBanDurationControls();
+    setInterval(() => {
+      if (localStorage.getItem(tokenKey) && document.visibilityState === "visible") refreshConnections(true);
+    }, 3000);
 
     if (localStorage.getItem(tokenKey)) {
       setStatus(loginStatus, "已保存登录状态。");
@@ -2397,6 +2494,7 @@ const adminPageHtml = String.raw`<!doctype html>
     }
 
     async function login() {
+      const generation = ++authGeneration;
       setStatus(loginStatus, "正在登录...");
       try {
         const response = await fetch(apiUrl("/auth/login"), {
@@ -2405,61 +2503,105 @@ const adminPageHtml = String.raw`<!doctype html>
           body: JSON.stringify({ username: usernameInput.value.trim(), password: passwordInput.value })
         });
         const data = await response.json();
+        if (authGeneration !== generation) return;
         if (!response.ok) throw new Error(data.error || "登录失败");
         localStorage.setItem(tokenKey, data.token);
+        lastConnectionsFingerprint = "";
         passwordInput.value = "";
         setStatus(loginStatus, "登录成功。", false, true);
         await refreshConnections();
         await refreshBans();
       } catch (error) {
-        setStatus(loginStatus, error.message, true);
+        if (authGeneration === generation) setStatus(loginStatus, error.message, true);
       }
     }
 
     function logout() {
+      authGeneration += 1;
       localStorage.removeItem(tokenKey);
-      body.innerHTML = '<tr><td colspan="10" class="muted">已退出。</td></tr>';
+      lastConnectionsFingerprint = "";
+      body.innerHTML = '<tr><td colspan="5" class="muted">已退出。</td></tr>';
       bansBody.innerHTML = '<tr><td colspan="6" class="muted">已退出。</td></tr>';
       connectionSummary.textContent = "未刷新";
       setStatus(loginStatus, "已退出。");
     }
 
-    async function refreshConnections() {
-      const token = localStorage.getItem(tokenKey);
-      if (!token) {
-        setStatus(connectionStatus, "请先登录。", true);
+    async function refreshConnections(quiet = false) {
+      if (connectionRefreshPromise) {
+        const activeRefresh = connectionRefreshPromise;
+        await activeRefresh;
+        if (!quiet) {
+          if (connectionRefreshPromise === activeRefresh) connectionRefreshPromise = undefined;
+          return refreshConnections(false);
+        }
         return;
       }
-      setStatus(connectionStatus, "正在刷新...");
+
+      const token = localStorage.getItem(tokenKey);
+      const generation = authGeneration;
+      if (!token) {
+        if (!quiet) setStatus(connectionStatus, "请先登录。", true);
+        return;
+      }
+
+      const request = (async () => {
+        if (!quiet) setStatus(connectionStatus, "正在刷新...");
+        try {
+          const data = await apiGet("/admin/connections");
+          if (authGeneration !== generation || localStorage.getItem(tokenKey) !== token) return;
+
+          const connections = data.connections || [];
+          currentVideoControls = data.videoControls || [];
+          currentVideoUrls = data.videoUrls || {};
+          const fingerprint = JSON.stringify([connections, currentVideoControls, currentVideoUrls]);
+          const interacting = body.contains(document.activeElement);
+          if (!quiet || (!interacting && fingerprint !== lastConnectionsFingerprint)) {
+            renderConnections(connections);
+            lastConnectionsFingerprint = fingerprint;
+          }
+          const onlineCount = connections.filter((connection) => connection.online !== false).length;
+          connectionSummary.textContent = "在线 " + onlineCount + " 个 / 总计 " + connections.length + " 个";
+          if (!quiet) {
+            const relayDiagnostic = displayRelayDiagnostic(data.diagnostics && data.diagnostics.udpRelay);
+            setStatus(connectionStatus, "已刷新：" + new Date().toLocaleString() + relayDiagnostic, false, true);
+          }
+        } catch (error) {
+          if (authGeneration === generation && localStorage.getItem(tokenKey) === token) setStatus(connectionStatus, error.message, true);
+        }
+      })();
+
+      connectionRefreshPromise = request;
       try {
-        const data = await apiGet("/admin/connections");
-        const connections = data.connections || [];
-        currentVideoControls = data.videoControls || [];
-        currentVideoUrls = data.videoUrls || {};
-        renderConnections(connections);
-        const onlineCount = connections.filter((connection) => connection.online !== false).length;
-        connectionSummary.textContent = "在线 " + onlineCount + " 个 / 总计 " + connections.length + " 个";
-        const relayDiagnostic = displayRelayDiagnostic(data.diagnostics && data.diagnostics.udpRelay);
-        setStatus(connectionStatus, "已刷新：" + new Date().toLocaleString() + relayDiagnostic, false, true);
-      } catch (error) {
-        setStatus(connectionStatus, error.message, true);
+        await request;
+      } finally {
+        if (connectionRefreshPromise === request) connectionRefreshPromise = undefined;
       }
     }
 
     async function kick(connection) {
       if (!confirm("确定踢出 " + displayUser(connection) + " 吗？")) return;
+      const session = captureAdminSession();
+      if (!adminSessionCurrent(session)) return;
       const result = await apiPost("/admin/connections/kick", connectionPayload(connection));
+      if (!adminSessionCurrent(session)) return;
       await refreshConnections();
+      if (!adminSessionCurrent(session)) return;
       await refreshBans();
+      if (!adminSessionCurrent(session)) return;
       setStatus(connectionStatus, "已踢出 " + (result.kicked || 0) + " 条当前记录。UDP 客户端如果还在连接，会在继续发包后重新出现；要阻止它回来请点封禁。");
     }
 
     async function ban(connection) {
       if (!confirm("确定踢出并封禁 " + displayUser(connection) + " 吗？")) return;
+      const session = captureAdminSession();
+      if (!adminSessionCurrent(session)) return;
       const ttlSeconds = selectedBanSeconds();
       const result = await apiPost("/admin/bans", { ...connectionPayload(connection), ttlSeconds });
+      if (!adminSessionCurrent(session)) return;
       await refreshConnections();
+      if (!adminSessionCurrent(session)) return;
       await refreshBans();
+      if (!adminSessionCurrent(session)) return;
       setStatus(connectionStatus, "已封禁，踢出 " + (result.banned || 0) + " 条连接，到期时间：" + displayExpiresAt(result.expiresAt), false, true);
     }
 
@@ -2476,8 +2618,19 @@ const adminPageHtml = String.raw`<!doctype html>
       return Number(banSeconds.value);
     }
 
+    function captureAdminSession() {
+      return { generation: authGeneration, token: localStorage.getItem(tokenKey) };
+    }
+
+    function adminSessionCurrent(session) {
+      return Boolean(session.token)
+        && authGeneration === session.generation
+        && localStorage.getItem(tokenKey) === session.token;
+    }
+
     async function refreshBans() {
       const token = localStorage.getItem(tokenKey);
+      const generation = authGeneration;
       if (!token) {
         setStatus(banStatus, "请先登录。", true);
         return;
@@ -2485,16 +2638,17 @@ const adminPageHtml = String.raw`<!doctype html>
       setStatus(banStatus, "正在刷新封禁...");
       try {
         const data = await apiGet("/admin/bans");
+        if (authGeneration !== generation || localStorage.getItem(tokenKey) !== token) return;
         renderBans(data.bans || []);
         setStatus(banStatus, "已刷新封禁：" + new Date().toLocaleString() + "，共 " + (data.bans || []).length + " 条。", false, true);
       } catch (error) {
-        setStatus(banStatus, error.message, true);
+        if (authGeneration === generation && localStorage.getItem(tokenKey) === token) setStatus(banStatus, error.message, true);
       }
     }
 
     function renderConnections(connections) {
       if (!connections.length) {
-        body.innerHTML = '<tr><td colspan="10" class="muted">当前没有在线连接。</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="muted">当前没有在线连接。</td></tr>';
         connectionSummary.textContent = "在线 0 个";
         return;
       }
@@ -2516,18 +2670,13 @@ const adminPageHtml = String.raw`<!doctype html>
           : undefined;
         const relayStats = displayRelayStats(connection);
         tr.innerHTML =
-          cell("类型", displayConnectionType(connection), connection.type) +
-          cell("房间/群组", room, room) +
-          cell("用户", user, user) +
-          cell("IP", address, address) +
-          cell("端口", String(port), String(port)) +
+          memberCell(room, user, systemBridge) +
+          connectionCell(connection, address, port, lastSeen, online) +
           relayCell(relayStats) +
-          cell("最后活跃", lastSeen === "-" ? "-" : new Date(lastSeen).toLocaleString(), lastSeen) +
           '<td data-label="摄像头"><div class="camera-actions"></div></td>' +
-          cell("状态", online ? "在线" : "离线", online ? "online" : "offline") +
-          '<td data-label="操作"><div class="actions"></div></td>';
+          '<td data-label="操作"><div class="actions connection-actions"></div></td>';
         const cameraActions = tr.querySelector(".camera-actions");
-        const actions = tr.querySelector(".actions");
+        const actions = tr.querySelector(".connection-actions");
         renderCameraControl(cameraActions, connection, control, videoRoom, systemBridge);
         if (!systemBridge) {
           if (videoRoom) {
@@ -2571,29 +2720,57 @@ const adminPageHtml = String.raw`<!doctype html>
         container.textContent = "-";
         return;
       }
-      container.className = "actions camera-actions";
+      const state = document.createElement("span");
+      state.className = "state-badge";
+      const help = document.createElement("span");
+      help.className = "camera-help";
+      container.appendChild(state);
+      container.appendChild(help);
+
       if (!control) {
+        state.classList.add("waiting");
+        state.textContent = "未配对";
+        help.textContent = "设备列表不可用；等待生成配对信息。";
         const pairButton = document.createElement("button");
         pairButton.className = "secondary";
-        pairButton.textContent = "配对摄像头";
-        pairButton.title = "生成一次性配对信息；在该人员的 SonoBus 客户端输入一次";
+        pairButton.textContent = "生成配对码";
+        pairButton.title = "生成一次性配对信息";
         pairButton.addEventListener("click", () => runAction(() => pairCamera(connection)));
         container.appendChild(pairButton);
         return;
       }
 
+      const cameras = control.cameras || [];
+      if (!control.online) {
+        state.classList.add("offline");
+        state.textContent = "客户端离线";
+        help.textContent = "等待新版客户端完成配对并上线。";
+      } else if (!cameras.length) {
+        state.classList.add("waiting");
+        state.textContent = "在线 · 暂无摄像头";
+        help.textContent = "客户端未上报设备；检查摄像头权限或客户端版本。";
+      } else {
+        state.textContent = "在线 · " + cameras.length + " 台摄像头";
+        help.textContent = "设备列表已同步。";
+      }
+
+      const controls = document.createElement("div");
+      controls.className = "camera-control-row";
       const select = document.createElement("select");
+      select.className = "camera-select";
       const automatic = document.createElement("option");
       automatic.value = "";
-      automatic.textContent = "自动选择最高 60 FPS";
+      automatic.textContent = cameras.length
+        ? "自动选择最高 60 FPS"
+        : control.online ? "自动选择（等待摄像头）" : "自动选择（客户端离线）";
       select.appendChild(automatic);
-      for (const camera of control.cameras || []) {
+      for (const camera of cameras) {
         const option = document.createElement("option");
         option.value = camera.id;
         option.textContent = camera.name;
         select.appendChild(option);
       }
-      if (control.cameraDeviceId && !(control.cameras || []).some((camera) => camera.id === control.cameraDeviceId)) {
+      if (control.cameraDeviceId && !cameras.some((camera) => camera.id === control.cameraDeviceId)) {
         const remembered = document.createElement("option");
         remembered.value = control.cameraDeviceId;
         remembered.textContent = "上次设备（当前未发现）";
@@ -2602,31 +2779,34 @@ const adminPageHtml = String.raw`<!doctype html>
       select.value = control.cameraDeviceId || "";
       select.title = "选择该人员客户端上的摄像头设备";
       select.addEventListener("change", () => runAction(() => setCameraDesired(connection, control.enabled, select.value || null)));
-      container.appendChild(select);
+      controls.appendChild(select);
 
       const toggle = document.createElement("button");
       toggle.className = control.enabled ? "danger" : "secondary";
       toggle.textContent = control.enabled ? "关闭摄像头" : "开启摄像头";
       toggle.addEventListener("click", () => runAction(() => setCameraDesired(connection, !control.enabled, select.value || null)));
-      container.appendChild(toggle);
+      controls.appendChild(toggle);
 
       if (!control.online) {
         const repair = document.createElement("button");
         repair.className = "secondary";
         repair.textContent = "重新配对";
         repair.addEventListener("click", () => runAction(() => pairCamera(connection)));
-        container.appendChild(repair);
+        controls.appendChild(repair);
       }
+      container.appendChild(controls);
 
       const details = document.createElement("span");
-      details.className = "muted";
+      details.className = "camera-details";
       details.textContent = cameraStatus(control);
       container.appendChild(details);
     }
 
     function cameraStatus(control) {
-      if (!control.online) return control.enabled ? "控制端离线，重连后自动恢复" : "控制端离线";
-      if (!control.capturing) return control.enabled ? "已下发开启，等待客户端" : "已关闭";
+      if (control.error) return control.error;
+      if (!control.online) return control.enabled ? "摄像头已启用，客户端重连后恢复" : "摄像头已关闭";
+      if (!(control.cameras || []).length) return "未检测到摄像头";
+      if (!control.capturing) return control.enabled ? "已下发开启，等待客户端" : "摄像头已关闭";
       const size = control.width && control.height ? control.width + "×" + control.height : "分辨率未知";
       const fps = control.fps ? " / " + Number(control.fps).toFixed(1) + " FPS" : "";
       const bitrate = control.bitrate ? " / " + (control.bitrate / 1000000).toFixed(1) + " Mbps" : "";
@@ -2636,21 +2816,31 @@ const adminPageHtml = String.raw`<!doctype html>
     async function pairCamera(connection) {
       const groupPassword = window.prompt("请输入该 SonoBus 群组密码；没有密码请留空：", "");
       if (groupPassword === null) return;
+      const session = captureAdminSession();
+      if (!adminSessionCurrent(session)) return;
       const result = await apiPost("/admin/video/pair", { group: connection.group, user: connection.user, groupPassword });
+      if (!adminSessionCurrent(session)) return;
       const pairingText = "SBPAIR1." + result.pairingId + "." + result.pairingCode;
       try {
         await navigator.clipboard.writeText(pairingText);
+        if (!adminSessionCurrent(session)) return;
         window.prompt("配对信息已复制。请在该人员的 SonoBus 客户端输入一次：", pairingText);
       } catch {
+        if (!adminSessionCurrent(session)) return;
         window.prompt("请复制并在该人员的 SonoBus 客户端输入一次：", pairingText);
       }
       await refreshConnections();
+      if (!adminSessionCurrent(session)) return;
       setStatus(connectionStatus, "已生成一次性摄像头配对信息；重新配对会立即撤销旧密钥并关闭旧连接。", false, true);
     }
 
     async function setCameraDesired(connection, enabled, cameraDeviceId) {
+      const session = captureAdminSession();
+      if (!adminSessionCurrent(session)) return;
       await apiPost("/admin/video/control", { group: connection.group, user: connection.user, enabled, cameraDeviceId });
+      if (!adminSessionCurrent(session)) return;
       await refreshConnections();
+      if (!adminSessionCurrent(session)) return;
       setStatus(connectionStatus, enabled ? "已下发开启命令；同群组其他摄像头已关闭。" : "已下发关闭命令。", false, true);
     }
 
@@ -2685,17 +2875,22 @@ const adminPageHtml = String.raw`<!doctype html>
 
     async function unban(ban) {
       if (!confirm("确定解除 " + displayBan(ban) + " 的封禁吗？")) return;
+      const session = captureAdminSession();
+      if (!adminSessionCurrent(session)) return;
       const result = await apiPost("/admin/bans/remove", { id: ban.id });
+      if (!adminSessionCurrent(session)) return;
       await refreshBans();
+      if (!adminSessionCurrent(session)) return;
       setStatus(banStatus, "已解除 " + (result.removed || 0) + " 条封禁。", false, true);
     }
 
     async function runAction(action) {
+      const generation = authGeneration;
       try {
         setStatus(connectionStatus, "正在操作...");
         await action();
       } catch (error) {
-        setStatus(connectionStatus, error.message, true);
+        if (authGeneration === generation) setStatus(connectionStatus, error.message, true);
       }
     }
 
@@ -2838,6 +3033,25 @@ const adminPageHtml = String.raw`<!doctype html>
       }
       return parts.length ? "；" + parts.join("；") : "";
     }
+
+    function memberCell(room, user, systemBridge) {
+      const systemBadge = systemBridge ? '<span class="state-badge neutral">系统服务</span>' : "";
+      return '<td data-label="成员" title="' + escapeHtml(user + " / " + room) + '"><div class="member-meta">'
+        + '<strong>' + escapeHtml(user) + '</strong>'
+        + '<span class="meta-line">' + escapeHtml(room) + '</span>'
+        + systemBadge + '</div></td>';
+    }
+
+    function connectionCell(connection, address, port, lastSeen, online) {
+      const endpoint = address + (String(port) === "-" ? "" : ":" + port);
+      const seen = lastSeen === "-" ? "-" : new Date(lastSeen).toLocaleString();
+      return '<td data-label="连接"><div class="connection-meta">'
+        + '<div class="connection-head"><span class="state-badge ' + (online ? "" : "offline") + '">'
+        + (online ? "在线" : "离线") + '</span><strong>' + escapeHtml(displayConnectionType(connection)) + '</strong></div>'
+        + '<span class="meta-line" title="' + escapeHtml(endpoint) + '">' + escapeHtml(endpoint) + '</span>'
+        + '<span class="meta-line">最近活跃 ' + escapeHtml(seen) + '</span></div></td>';
+    }
+
 
     function cell(label, text, title = "") {
       return '<td data-label="' + escapeHtml(label) + '" title="' + escapeHtml(title || text || "-") + '">' + escapeHtml(text || "-") + '</td>';

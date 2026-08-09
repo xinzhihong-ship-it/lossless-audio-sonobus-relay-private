@@ -115,6 +115,16 @@ test("admin web page is served for browser-based remote administration", async (
     assert.match(html, /系统桥接服务/);
     assert.match(html, /if \(!systemBridge\)/);
     assert.match(html, /startsWith\("media-mix-"\)/);
+    assert.match(html, /class="connections-table"/);
+    assert.match(html, /refreshConnections\(true\)/);
+    assert.match(html, /设备列表不可用/);
+    assert.match(html, /客户端未上报设备/);
+    assert.match(html, /await activeRefresh/);
+    assert.match(html, /localStorage\.getItem\(tokenKey\) !== token/);
+    assert.match(html, /body\.contains\(document\.activeElement\)/);
+    assert.match(html, /td\[colspan\]/);
+    assert.match(html, /authGeneration !== generation/);
+    assert.match(html, /adminSessionCurrent\(session\)/);
   } finally {
     await app.close();
   }
@@ -1888,7 +1898,7 @@ test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs",
     assert.equal(response.videoUrls.rtspBase, "rtsp://video.example.test:19092");
 
     const html = await (await fetch(`${baseUrl}/admin`)).text();
-    assert.match(html, /配对摄像头/);
+    assert.match(html, /生成配对码/);
     assert.match(html, /自动选择最高 60 FPS/);
     assert.match(html, /OBS 媒体源 RTSP/);
     assert.doesNotMatch(html, /SBV1|pendingFrame|JPEG/);
