@@ -27,6 +27,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.server
+      args:
+        ALPINE_PACKAGE_REPOSITORY: ${ALPINE_PACKAGE_REPOSITORY:-https://dl-cdn.alpinelinux.org/alpine}
     restart: unless-stopped
     environment:
       PORT: 8080

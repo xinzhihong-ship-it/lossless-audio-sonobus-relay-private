@@ -6,7 +6,9 @@ RUN npm install
 RUN npm run build
 
 FROM alpine:3.22 AS bridge-build
-RUN apk add --no-cache g++
+ARG ALPINE_PACKAGE_REPOSITORY=https://dl-cdn.alpinelinux.org/alpine
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_PACKAGE_REPOSITORY}|" /etc/apk/repositories \
+  && apk add --no-cache g++
 WORKDIR /src
 COPY sonobus/deps/aoo ./sonobus/deps/aoo
 COPY tools/web-bridge ./tools/web-bridge
@@ -31,7 +33,9 @@ RUN g++ -std=c++17 -O2 -pthread \
   -o /usr/local/bin/sonobus-web-bridge
 
 FROM node:22-alpine3.22 AS runtime
-RUN apk add --no-cache ffmpeg libstdc++
+ARG ALPINE_PACKAGE_REPOSITORY=https://dl-cdn.alpinelinux.org/alpine
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_PACKAGE_REPOSITORY}|" /etc/apk/repositories \
+  && apk add --no-cache ffmpeg libstdc++
 WORKDIR /app
 ENV NODE_ENV=production \
   VIDEO_BRIDGE_BINARY=/usr/local/bin/sonobus-web-bridge \
