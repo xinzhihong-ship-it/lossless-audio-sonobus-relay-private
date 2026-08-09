@@ -10,6 +10,7 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <cctype>
 
 #define AOONET_MSG_CLIENT_PING \
     AOO_MSG_DOMAIN AOONET_MSG_CLIENT AOONET_MSG_PING
@@ -279,6 +280,11 @@ int32_t aoonet_server_get_state_json(aoonet_server *server, char *buffer, int32_
     return server->get_state_json(buffer, size);
 }
 
+int32_t aoonet_server_get_video_enrollment_secret(aoonet_server *server, const char *group, const char *user,
+                                                   const char *address, char *buffer, int32_t size){
+    return server->get_video_enrollment_secret(group, user, address, buffer, size);
+}
+
 int32_t aoonet_server_kick(aoonet_server *server, const char *group, const char *user, const char *address){
     return server->kick(group, user, address);
 }
@@ -385,6 +391,29 @@ int32_t server::get_state_json(char *buffer, int32_t size)
     std::lock_guard<std::recursive_mutex> lock(admin_mutex_);
     prune_bans_locked();
     return copy_json_result(state_json_locked(), buffer, size);
+}
+
+int32_t server::get_video_enrollment_secret(const char *group, const char *user, const char *address,
+                                            char *buffer, int32_t size)
+{
+    std::lock_guard<std::recursive_mutex> lock(admin_mutex_);
+    const std::string group_name = group ? group : "";
+    const std::string user_name = user ? user : "";
+    const std::string public_address = address ? address : "";
+    for (const auto& candidate_group : groups_)
+    {
+        if (candidate_group->name != group_name) continue;
+        for (const auto& candidate_user : candidate_group->users())
+        {
+            const auto *endpoint = candidate_user->endpoint;
+            if (candidate_user->name == user_name && endpoint
+                && endpoint->public_address.name() == public_address
+                && endpoint->video_enrollment_secret.size() == 64)
+                return copy_json_result(endpoint->video_enrollment_secret, buffer, size);
+        }
+    }
+    if (buffer && size > 0) buffer[0] = 0;
+    return 0;
 }
 
 int32_t server::kick(const char *group, const char *user, const char *address)
@@ -1511,11 +1540,20 @@ void client_endpoint::handle_group_join(const osc::ReceivedMessage& msg)
     if (msg.ArgumentCount() > 2) {
         is_public = (it++)->AsBool();
     }
+    std::string video_enrollment_secret_candidate;
+    if (msg.ArgumentCount() > 3) {
+        const std::string candidate = (it++)->AsString();
+        const bool valid = candidate.size() == 64
+            && std::all_of(candidate.begin(), candidate.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
+        if (valid) video_enrollment_secret_candidate = candidate;
+    }
 
     server::error err;
     if (user_){
         {
             std::lock_guard<std::recursive_mutex> lock(server_->admin_mutex_);
+            if (!video_enrollment_secret_candidate.empty())
+                video_enrollment_secret = std::move(video_enrollment_secret_candidate);
             server_->prune_bans_locked();
             if (server_->is_banned_locked(name, user_->name, public_address.name())) {
                 err = server::error::access_denied;

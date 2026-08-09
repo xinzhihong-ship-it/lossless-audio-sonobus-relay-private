@@ -158,8 +158,8 @@ OBS Media Source：rtsp://<服务器>:19092/SB_<群组名>
 - `19090/TCP`：公开观看与 WebRTC/WHEP HTTP。
 - `19091/UDP`：WebRTC ICE 媒体。
 - `19092/TCP`：RTSP 发布和 OBS 读取。
-- 用户本机只做一次摄像头权限与配对；之后只有管理员能开关摄像头、选择设备。
-- 每组最多一路摄像头；helper 枚举实际模式并选择支持 60 FPS 的最高分辨率。
+- 客户端加入群组后自动申请摄像头授权；管理员后台确认一次，密钥自动写入系统凭据存储，不显示授权码。
+- 每组最多一路摄像头；Windows 以 `SharedReadOnly` 读取当前真实 60 FPS 流，不抢占设备、不复制帧伪装 60 FPS，也不在失败时自动换摄像头。
 - 摄像头 H.264 与群组 Opus 48 kHz 立体声混音共用稳定的 `SB_<群组>` 公共路径。
 
 详细说明见 [docs/video-relay.md](docs/video-relay.md)。

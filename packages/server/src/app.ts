@@ -21,6 +21,7 @@ export type ServerConfig = {
   udpRelayPort?: number;
   udpRawPeerTtlMs?: number;
   connectionServerAdminUrl?: string;
+  connectionServerAdminToken?: string;
   webBridgeAdminUrl?: string;
   publicVideoHost?: string;
   publicHttpPort?: number;
@@ -78,7 +79,9 @@ export async function createApp(config: ServerConfig): Promise<App> {
       : undefined
   });
   const udpRelay = config.udpRelayPort === undefined ? undefined : new UdpRelay(config.udpRelayPort, config.udpRawPeerTtlMs);
-  const connectionServer = config.connectionServer ?? (config.connectionServerAdminUrl ? new HttpConnectionServerAdmin(config.connectionServerAdminUrl) : undefined);
+  const connectionServer = config.connectionServer ?? (config.connectionServerAdminUrl
+    ? new HttpConnectionServerAdmin(config.connectionServerAdminUrl, config.connectionServerAdminToken ?? "")
+    : undefined);
   const mediaMtx = config.mediaMtxAdmin ?? (config.mediaMtxAdminUrl
     ? new HttpMediaMtxAdmin(config.mediaMtxAdminUrl, config.mediaMtxApiUsername, config.mediaMtxApiPassword)
     : undefined);
@@ -198,6 +201,19 @@ async function handleHttp(
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/video/control/enroll") {
+    if (!connectionServer) {
+      sendJson(res, 503, { error: "SonoBus enrollment is unavailable." });
+      return;
+    }
+    try {
+      sendJson(res, 200, await videoControl.requestEnrollment(await readJson(req), clientAddress(req), connectionServer));
+    } catch (error) {
+      sendJson(res, 403, { error: error instanceof Error ? error.message : "Video enrollment denied." });
+    }
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/auth/login") {
     const body = await readJson<{ username?: string; password?: string }>(req);
     if (!body.username || !body.password) {
@@ -280,34 +296,31 @@ async function handleHttp(
       sendJson(res, 403, { error: "Admin role required." });
       return;
     }
-    sendJson(res, 200, { controls: await videoControl.list(), paths: (await mediaMtx?.paths().catch(() => [])) ?? [] });
+    sendJson(res, 200, {
+      controls: await videoControl.list(),
+      enrollments: await videoControl.listPendingEnrollments(),
+      paths: (await mediaMtx?.paths().catch(() => [])) ?? []
+    });
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/admin/video/pair") {
+  if (req.method === "POST" && url.pathname === "/admin/video/enrollment/approve") {
     if (claims.role !== "admin") {
       sendJson(res, 403, { error: "Admin role required." });
       return;
     }
-    const body = await readJson<{ group?: string; user?: string; groupPassword?: string }>(req);
-    const group = cleanWebField(body.group, 77);
-    const user = cleanWebField(body.user, 80);
+    const body = await readJson<{ requestId?: string; groupPassword?: string }>(req);
+    const requestId = cleanWebField(body.requestId, 80);
     const groupPassword = typeof body.groupPassword === "string" ? body.groupPassword : "";
-    if (Buffer.byteLength(groupPassword, "utf8") > 512) {
-      sendJson(res, 400, { error: "Group password is too long." });
+    if (!requestId || Buffer.byteLength(groupPassword, "utf8") > 512) {
+      sendJson(res, 400, { error: "A valid request and group password are required." });
       return;
     }
-    if (!videoRoom(group) || !user || isSystemBridgeUser(user)) {
-      sendJson(res, 400, { error: "A valid group and user are required." });
-      return;
-    }
-    if (connectionServer && !(await connectionServer.connections()).some((connection) => connection.group === group && connection.user === user)) {
-      sendJson(res, 409, { error: "Pairing requires an active SonoBus connection." });
-      return;
-    }
-    sendJson(res, 201, await videoControl.createPairing(group, user, groupPassword));
+    sendJson(res, 201, await videoControl.approveEnrollment(requestId, groupPassword));
     return;
   }
+
+
 
   if (req.method === "POST" && url.pathname === "/admin/video/control") {
     if (claims.role !== "admin") {
@@ -322,6 +335,10 @@ async function handleHttp(
       return;
     }
     const cameraDeviceId = body.cameraDeviceId === null ? null : cleanWebField(body.cameraDeviceId, 200) || undefined;
+    if (body.enabled && !cameraDeviceId) {
+      sendJson(res, 400, { error: "Select a camera before enabling it." });
+      return;
+    }
     const control = await videoControl.setDesired(group, user, body.enabled, cameraDeviceId);
     sendJson(res, 200, { control, controls: await videoControl.list() });
     return;
@@ -339,6 +356,7 @@ async function handleHttp(
         ...((await connectionServer?.connections()) ?? [])
       ]),
       videoControls: await videoControl.list(),
+      videoEnrollments: await videoControl.listPendingEnrollments(),
       videoPaths: (await mediaMtx?.paths().catch(() => [])) ?? [],
       videoUrls: config.publicVideoHost
         ? {
@@ -546,6 +564,14 @@ async function findOrCreateRoomByName(store: Store, name: string, createdBy: str
 
 function cleanWebField(value: string | undefined, maxLength: number): string {
   return (value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+}
+
+function clientAddress(req: IncomingMessage): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const value = (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0])
+    ?? req.socket.remoteAddress
+    ?? "";
+  return value.trim().replace(/^::ffff:/, "");
 }
 
 function isSystemBridgeUser(user: string): boolean {
@@ -2470,6 +2496,7 @@ const adminPageHtml = String.raw`<!doctype html>
     const customBanLabel = document.getElementById("customBanLabel");
     const customBanMinutes = document.getElementById("customBanMinutes");
     let currentVideoControls = [];
+    let currentVideoEnrollments = [];
     let currentVideoUrls = {};
     let connectionRefreshPromise;
     let lastConnectionsFingerprint = "";
@@ -2552,8 +2579,9 @@ const adminPageHtml = String.raw`<!doctype html>
 
           const connections = data.connections || [];
           currentVideoControls = data.videoControls || [];
+          currentVideoEnrollments = data.videoEnrollments || [];
           currentVideoUrls = data.videoUrls || {};
-          const fingerprint = JSON.stringify([connections, currentVideoControls, currentVideoUrls]);
+          const fingerprint = JSON.stringify([connections, currentVideoControls, currentVideoEnrollments, currentVideoUrls]);
           const interacting = body.contains(document.activeElement);
           if (!quiet || (!interacting && fingerprint !== lastConnectionsFingerprint)) {
             renderConnections(connections);
@@ -2668,6 +2696,9 @@ const adminPageHtml = String.raw`<!doctype html>
         const control = connection.type === "sonobus-connection"
           ? currentVideoControls.find((candidate) => candidate.group === room && candidate.user === user)
           : undefined;
+        const enrollment = connection.type === "sonobus-connection"
+          ? currentVideoEnrollments.find((candidate) => candidate.group === room && candidate.user === user)
+          : undefined;
         const relayStats = displayRelayStats(connection);
         tr.innerHTML =
           memberCell(room, user, systemBridge) +
@@ -2677,7 +2708,7 @@ const adminPageHtml = String.raw`<!doctype html>
           '<td data-label="操作"><div class="actions connection-actions"></div></td>';
         const cameraActions = tr.querySelector(".camera-actions");
         const actions = tr.querySelector(".connection-actions");
-        renderCameraControl(cameraActions, connection, control, videoRoom, systemBridge);
+        renderCameraControl(cameraActions, connection, control, enrollment, videoRoom, systemBridge);
         if (!systemBridge) {
           if (videoRoom) {
             const videoConnection = { ...connection, videoRoom };
@@ -2715,7 +2746,7 @@ const adminPageHtml = String.raw`<!doctype html>
       }
     }
 
-    function renderCameraControl(container, connection, control, videoRoom, systemBridge) {
+    function renderCameraControl(container, connection, control, enrollment, videoRoom, systemBridge) {
       if (systemBridge || connection.type !== "sonobus-connection" || !videoRoom) {
         container.textContent = "-";
         return;
@@ -2729,14 +2760,18 @@ const adminPageHtml = String.raw`<!doctype html>
 
       if (!control) {
         state.classList.add("waiting");
-        state.textContent = "未配对";
-        help.textContent = "设备列表不可用；等待生成配对信息。";
-        const pairButton = document.createElement("button");
-        pairButton.className = "secondary";
-        pairButton.textContent = "生成配对码";
-        pairButton.title = "生成一次性配对信息";
-        pairButton.addEventListener("click", () => runAction(() => pairCamera(connection)));
-        container.appendChild(pairButton);
+        state.textContent = enrollment ? "等待管理员授权" : "等待客户端申请";
+        help.textContent = enrollment
+          ? "客户端已完成身份校验；批准后将自动保存密钥。"
+          : "用户加入 SonoBus 群组后会自动申请，无需输入授权码。";
+        if (enrollment) {
+          const approveButton = document.createElement("button");
+          approveButton.className = "secondary";
+          approveButton.textContent = "授权摄像头";
+          approveButton.title = "批准这个已认证的 SonoBus 客户端";
+          approveButton.addEventListener("click", () => runAction(() => approveCameraEnrollment(enrollment)));
+          container.appendChild(approveButton);
+        }
         return;
       }
 
@@ -2761,8 +2796,9 @@ const adminPageHtml = String.raw`<!doctype html>
       const automatic = document.createElement("option");
       automatic.value = "";
       automatic.textContent = cameras.length
-        ? "自动选择最高 60 FPS"
-        : control.online ? "自动选择（等待摄像头）" : "自动选择（客户端离线）";
+        ? "请选择摄像头"
+        : control.online ? "暂无可用摄像头" : "客户端离线";
+      automatic.disabled = true;
       select.appendChild(automatic);
       for (const camera of cameras) {
         const option = document.createElement("option");
@@ -2784,15 +2820,16 @@ const adminPageHtml = String.raw`<!doctype html>
       const toggle = document.createElement("button");
       toggle.className = control.enabled ? "danger" : "secondary";
       toggle.textContent = control.enabled ? "关闭摄像头" : "开启摄像头";
+      toggle.disabled = !control.enabled && !select.value;
       toggle.addEventListener("click", () => runAction(() => setCameraDesired(connection, !control.enabled, select.value || null)));
       controls.appendChild(toggle);
 
-      if (!control.online) {
-        const repair = document.createElement("button");
-        repair.className = "secondary";
-        repair.textContent = "重新配对";
-        repair.addEventListener("click", () => runAction(() => pairCamera(connection)));
-        controls.appendChild(repair);
+      if (enrollment) {
+        const approve = document.createElement("button");
+        approve.className = "secondary";
+        approve.textContent = "授权新客户端";
+        approve.addEventListener("click", () => runAction(() => approveCameraEnrollment(enrollment)));
+        controls.appendChild(approve);
       }
       container.appendChild(controls);
 
@@ -2813,25 +2850,16 @@ const adminPageHtml = String.raw`<!doctype html>
       return (control.codec || "H.264") + " / " + size + fps + bitrate + (control.cameraName ? " / " + control.cameraName : "");
     }
 
-    async function pairCamera(connection) {
+    async function approveCameraEnrollment(enrollment) {
       const groupPassword = window.prompt("请输入该 SonoBus 群组密码；没有密码请留空：", "");
       if (groupPassword === null) return;
       const session = captureAdminSession();
       if (!adminSessionCurrent(session)) return;
-      const result = await apiPost("/admin/video/pair", { group: connection.group, user: connection.user, groupPassword });
+      await apiPost("/admin/video/enrollment/approve", { requestId: enrollment.requestId, groupPassword });
       if (!adminSessionCurrent(session)) return;
-      const pairingText = "SBPAIR1." + result.pairingId + "." + result.pairingCode;
-      try {
-        await navigator.clipboard.writeText(pairingText);
-        if (!adminSessionCurrent(session)) return;
-        window.prompt("配对信息已复制。请在该人员的 SonoBus 客户端输入一次：", pairingText);
-      } catch {
-        if (!adminSessionCurrent(session)) return;
-        window.prompt("请复制并在该人员的 SonoBus 客户端输入一次：", pairingText);
-      }
       await refreshConnections();
       if (!adminSessionCurrent(session)) return;
-      setStatus(connectionStatus, "已生成一次性摄像头配对信息；重新配对会立即撤销旧密钥并关闭旧连接。", false, true);
+      setStatus(connectionStatus, "摄像头客户端已授权；密钥将自动保存到客户端系统凭据存储。", false, true);
     }
 
     async function setCameraDesired(connection, enabled, cameraDeviceId) {

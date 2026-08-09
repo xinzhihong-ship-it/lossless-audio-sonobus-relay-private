@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <sstream>
 #include <random>
+#include <iomanip>
 
 #include "md5/md5.h"
 
@@ -79,6 +80,16 @@ std::string encrypt(const std::string& input){
     }
 
     return output;
+}
+
+std::string random_enrollment_secret(){
+    std::random_device random;
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (int i = 0; i < 32; ++i){
+        output << std::setw(2) << (random() & 0xff);
+    }
+    return output.str();
 }
 
 char * copy_string(const char * s){
@@ -175,6 +186,7 @@ aoo::net::client::client(void *udpsocket, aoo_sendfn fn, int port)
     std::default_random_engine reng(randdev());
     std::uniform_int_distribution<int64_t> uniform_dist(1); // minimum of 1, max of maxint
     token_ = uniform_dist(reng);
+    video_enrollment_secret_ = random_enrollment_secret();
 }
 
 void aoonet_client_free(aoonet_client *client){
@@ -529,6 +541,14 @@ int32_t aoo::net::client::handle_events(aoo_eventhandler fn, void *user){
     return n;
 }
 
+int32_t aoo::net::client::get_video_enrollment_secret(char *buffer, int32_t size) const{
+    if (!buffer || size <= 0) return (int32_t)video_enrollment_secret_.size();
+    const auto count = std::min<int32_t>((int32_t)video_enrollment_secret_.size(), size - 1);
+    memcpy(buffer, video_enrollment_secret_.data(), count);
+    buffer[count] = 0;
+    return count;
+}
+
 namespace aoo {
 namespace net {
 
@@ -686,7 +706,7 @@ void client::do_group_join(const std::string &group, const std::string &pwd, boo
     char buf[AOO_MAXPACKETSIZE];
     osc::OutboundPacketStream msg(buf, sizeof(buf));
     msg << osc::BeginMessage(AOONET_MSG_SERVER_GROUP_JOIN)
-        << group.c_str() << pwd.c_str() << is_public << osc::EndMessage;
+        << group.c_str() << pwd.c_str() << is_public << video_enrollment_secret_.c_str() << osc::EndMessage;
 
     send_server_message_tcp(msg.Data(), (int32_t) msg.Size());
 }

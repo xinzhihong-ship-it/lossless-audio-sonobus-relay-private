@@ -1,7 +1,9 @@
 #include "aoo/aoo_net.h"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <csignal>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -12,6 +14,7 @@
 
 namespace {
 aoonet_server *g_server = nullptr;
+std::string g_admin_token;
 
 int env_int(const char *name, int fallback)
 {
@@ -20,6 +23,41 @@ int env_int(const char *name, int fallback)
         return fallback;
     }
     return std::atoi(value);
+}
+
+std::string env_string(const char *name, const char *fallback)
+{
+    const char *value = std::getenv(name);
+    return value && *value ? value : fallback;
+}
+
+bool secure_equal(const std::string& left, const std::string& right)
+{
+    if (left.size() != right.size()) return false;
+    unsigned char difference = 0;
+    for (size_t i = 0; i < left.size(); ++i)
+        difference |= static_cast<unsigned char>(left[i] ^ right[i]);
+    return difference == 0;
+}
+
+bool authorized(const std::string& header)
+{
+    if (g_admin_token.empty()) return false;
+    std::istringstream lines(header);
+    std::string line;
+    while (std::getline(lines, line))
+    {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        auto name = line.substr(0, colon);
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (name != "authorization") continue;
+        auto value = line.substr(colon + 1);
+        value.erase(0, value.find_first_not_of(" \t"));
+        return secure_equal(value, "Bearer " + g_admin_token);
+    }
+    return false;
 }
 
 std::string json_escape(const std::string& value)
@@ -133,8 +171,21 @@ void handle_client(int client)
 
     if (method == "GET" && path == "/health") {
         write_response(client, 200, "{\"ok\":true}");
+    } else if (!authorized(header)) {
+        write_response(client, 401, "{\"error\":\"unauthorized\"}");
     } else if (method == "GET" && path == "/connections") {
         write_response(client, 200, get_json(aoonet_server_get_state_json));
+    } else if (method == "POST" && path == "/video/enrollment-secret") {
+        std::string buffer(65, '\0');
+        auto n = aoonet_server_get_video_enrollment_secret(
+            g_server,
+            get_string_field(body, "group").c_str(),
+            get_string_field(body, "user").c_str(),
+            get_string_field(body, "address").c_str(),
+            buffer.data(),
+            (int)buffer.size());
+        if (n > 0) write_response(client, 200, "{\"secret\":\"" + std::string(buffer.data(), (size_t)n) + "\"}");
+        else write_response(client, 404, "{\"error\":\"active enrollment session not found\"}");
     } else if (method == "POST" && path == "/connections/kick") {
         auto kicked = aoonet_server_kick(g_server, get_string_field(body, "group").c_str(), get_string_field(body, "user").c_str(), get_string_field(body, "address").c_str());
         write_response(client, 200, "{\"kicked\":" + std::to_string(kicked) + "}");
@@ -159,7 +210,7 @@ void handle_client(int client)
     }
 }
 
-void admin_thread(int port)
+void admin_thread(int port, const std::string& bind_address)
 {
     int server = socket(AF_INET, SOCK_STREAM, 0);
     int yes = 1;
@@ -167,10 +218,11 @@ void admin_thread(int port)
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons((uint16_t)port);
-    if (bind(server, (sockaddr *)&addr, sizeof(addr)) < 0 || listen(server, 16) < 0) {
-        std::cerr << "admin http listen failed on :" << port << "\n";
+    if (inet_pton(AF_INET, bind_address.c_str(), &addr.sin_addr) != 1
+        || bind(server, (sockaddr *)&addr, sizeof(addr)) < 0 || listen(server, 16) < 0) {
+        std::cerr << "admin http listen failed on " << bind_address << ":" << port << "\n";
+        close(server);
         return;
     }
 
@@ -195,6 +247,13 @@ int main()
 {
     int port = env_int("CONNECTION_SERVER_PORT", 10998);
     int admin_port = env_int("CONNECTION_SERVER_ADMIN_PORT", 18098);
+    const auto admin_bind = env_string("CONNECTION_SERVER_ADMIN_BIND", "127.0.0.1");
+    const char *admin_token = std::getenv("CONNECTION_SERVER_ADMIN_TOKEN");
+    if (!admin_token || std::strlen(admin_token) < 32) {
+        std::cerr << "CONNECTION_SERVER_ADMIN_TOKEN must contain at least 32 characters\n";
+        return 1;
+    }
+    g_admin_token = admin_token;
 
     int err = 0;
     g_server = aoonet_server_new(port, &err);
@@ -206,10 +265,10 @@ int main()
     std::signal(SIGTERM, signal_handler);
     std::signal(SIGINT, signal_handler);
 
-    std::thread admin(admin_thread, admin_port);
+    std::thread admin(admin_thread, admin_port, admin_bind);
     admin.detach();
 
-    std::cout << "SonoBus connection server listening on :" << port << ", admin :" << admin_port << "\n";
+    std::cout << "SonoBus connection server listening on :" << port << ", admin " << admin_bind << ":" << admin_port << "\n";
     aoonet_server_run(g_server);
     aoonet_server_free(g_server);
     g_server = nullptr;

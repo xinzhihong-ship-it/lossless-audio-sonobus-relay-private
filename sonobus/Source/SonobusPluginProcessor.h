@@ -619,12 +619,10 @@ public:
         String pairingId;
     };
 
-    VideoLinkInfo & getVideoLinkInfo() { return mVideoLinkInfo; }
     void restartVideoSender();
     void stopVideoSender();
     String getVideoStatusText() const;
     String getVideoCameraName() const;
-    bool setVideoPairingText(const String& text, String& error);
     void clearVideoPairing();
     bool hasVideoPairing() const;
 
@@ -1298,6 +1296,7 @@ private:
     // misc
     bool mSliderSnapToMouse = true;
     bool mDisableKeyboardShortcuts = false;
+    mutable CriticalSection mVideoPairingLock;
     VideoLinkInfo mVideoLinkInfo;
     std::unique_ptr<VideoRelayClient> mVideoRelayClient;
     

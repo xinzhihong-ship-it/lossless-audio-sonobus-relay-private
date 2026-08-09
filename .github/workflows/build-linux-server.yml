@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - private-main
     tags:
       - "v*"
     paths:
@@ -14,6 +15,7 @@ on:
       - "docs/**"
       - "tools/web-bridge/**"
       - "tools/connection-server/**"
+      - "sonobus/deps/aoo/**"
       - "packages/**"
       - "package.json"
       - "package-lock.json"

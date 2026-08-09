@@ -977,10 +977,33 @@ void SonobusAudioProcessor::restartVideoSender()
     if (videoHost.isEmpty() && mServerEndpoint != nullptr)
         videoHost = mServerEndpoint->ipaddr;
 
+    const auto account = VideoPairingStore::account(videoHost, joinedGroup, mCurrentUsername);
+    String storedPairingId;
+    {
+        const ScopedLock lock(mVideoPairingLock);
+        storedPairingId = mVideoLinkInfo.pairingId;
+    }
     MemoryBlock pairingKey;
-    VideoPairingStore::load(VideoPairingStore::account(videoHost, joinedGroup, mCurrentUsername),
-                            mVideoLinkInfo.pairingId, pairingKey);
-    mVideoRelayClient->start(videoHost, joinedGroup, mCurrentUsername, mVideoLinkInfo.pairingId, pairingKey);
+    VideoPairingStore::load(account, storedPairingId, pairingKey);
+    char enrollmentSecretBuffer[65]{};
+    if (mAooClient)
+        mAooClient->get_video_enrollment_secret(enrollmentSecretBuffer, static_cast<int32_t>(sizeof(enrollmentSecretBuffer)));
+    const auto enrollmentSecret = String::fromUTF8(enrollmentSecretBuffer);
+    mVideoRelayClient->start(
+        videoHost, joinedGroup, mCurrentUsername, storedPairingId, pairingKey, enrollmentSecret,
+        [this, account](const String& pairingId, const MemoryBlock& key, String& error)
+        {
+            if (!VideoPairingStore::save(account, pairingId, key, error)) return false;
+            String previousPairingId;
+            {
+                const ScopedLock lock(mVideoPairingLock);
+                previousPairingId = mVideoLinkInfo.pairingId;
+                mVideoLinkInfo.pairingId = pairingId;
+            }
+            if (previousPairingId.isNotEmpty() && previousPairingId != pairingId)
+                VideoPairingStore::remove(account, previousPairingId);
+            return true;
+        });
 }
 
 void SonobusAudioProcessor::stopVideoSender()
@@ -991,7 +1014,7 @@ void SonobusAudioProcessor::stopVideoSender()
 
 String SonobusAudioProcessor::getVideoStatusText() const
 {
-    return mVideoRelayClient ? mVideoRelayClient->getStatusText() : TRANS("未连接");
+    return mVideoRelayClient ? mVideoRelayClient->getStatusText() : sonobus::video::translated(u8"未连接");
 }
 
 String SonobusAudioProcessor::getVideoCameraName() const
@@ -999,58 +1022,36 @@ String SonobusAudioProcessor::getVideoCameraName() const
     return mVideoRelayClient ? mVideoRelayClient->getActiveCamera() : String();
 }
 
-bool SonobusAudioProcessor::setVideoPairingText(const String& text, String& error)
-{
-    const auto joinedGroup = getCurrentJoinedGroup();
-    auto videoHost = mRelayServerHost;
-    if (videoHost.isEmpty() && mServerEndpoint != nullptr)
-        videoHost = mServerEndpoint->ipaddr;
-    if (joinedGroup.isEmpty() || videoHost.isEmpty() || mCurrentUsername.isEmpty())
-    {
-        error = TRANS("请先加入 SonoBus 群组再保存摄像头配对信息");
-        return false;
-    }
-
-    String pairingId;
-    MemoryBlock pairingKey;
-    if (!VideoRelayClient::parsePairingText(text, pairingId, pairingKey))
-    {
-        error = TRANS("摄像头配对信息格式无效");
-        return false;
-    }
-
-    const auto account = VideoPairingStore::account(videoHost, joinedGroup, mCurrentUsername);
-    const auto previousPairingId = mVideoLinkInfo.pairingId;
-    if (!VideoPairingStore::save(account, pairingId, pairingKey, error))
-        return false;
-
-    mVideoLinkInfo.pairingId = pairingId;
-    if (previousPairingId.isNotEmpty() && previousPairingId != pairingId)
-        VideoPairingStore::remove(account, previousPairingId);
-    restartVideoSender();
-    return true;
-}
 
 void SonobusAudioProcessor::clearVideoPairing()
 {
     auto videoHost = mRelayServerHost;
     if (videoHost.isEmpty() && mServerEndpoint != nullptr)
         videoHost = mServerEndpoint->ipaddr;
-    VideoPairingStore::remove(VideoPairingStore::account(videoHost, getCurrentJoinedGroup(), mCurrentUsername),
-                              mVideoLinkInfo.pairingId);
-    mVideoLinkInfo.pairingId.clear();
-    stopVideoSender();
+    String pairingId;
+    {
+        const ScopedLock lock(mVideoPairingLock);
+        pairingId = mVideoLinkInfo.pairingId;
+        mVideoLinkInfo.pairingId.clear();
+    }
+    VideoPairingStore::remove(VideoPairingStore::account(videoHost, getCurrentJoinedGroup(), mCurrentUsername), pairingId);
+    restartVideoSender();
 }
 
 bool SonobusAudioProcessor::hasVideoPairing() const
 {
-    if (mVideoLinkInfo.pairingId.isEmpty()) return false;
+    String pairingId;
+    {
+        const ScopedLock lock(mVideoPairingLock);
+        pairingId = mVideoLinkInfo.pairingId;
+    }
+    if (pairingId.isEmpty()) return false;
     auto videoHost = mRelayServerHost;
     if (videoHost.isEmpty() && mServerEndpoint != nullptr)
         videoHost = mServerEndpoint->ipaddr;
     MemoryBlock key;
     return VideoPairingStore::load(VideoPairingStore::account(videoHost, getCurrentJoinedGroup(), mCurrentUsername),
-                                   mVideoLinkInfo.pairingId, key);
+                                   pairingId, key);
 }
 
 
@@ -9040,7 +9041,10 @@ void SonobusAudioProcessor::getStateInformationWithOptions(MemoryBlock& destData
     extraTree.setProperty(autoresizeDropRateThreshKey, var((float)mAutoresizeDropRateThresh), nullptr);
     extraTree.setProperty(reconnectServerLossKey, mReconnectAfterServerLoss.get(), nullptr);
 
-    extraTree.appendChild(mVideoLinkInfo.getValueTree(), nullptr);
+    {
+        const ScopedLock lock(mVideoPairingLock);
+        extraTree.appendChild(mVideoLinkInfo.getValueTree(), nullptr);
+    }
     
     ValueTree inputChannelGroupsTree = tempstate.getOrCreateChildWithName(inputChannelGroupsStateKey, nullptr);
     if (includeInputGroups) {
@@ -9218,6 +9222,7 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
             
             ValueTree videoinfo = extraTree.getChildWithName(videoLinkInfoKey);
             if (videoinfo.isValid()) {
+                const ScopedLock lock(mVideoPairingLock);
                 mVideoLinkInfo.setFromValueTree(videoinfo);
             }
         }

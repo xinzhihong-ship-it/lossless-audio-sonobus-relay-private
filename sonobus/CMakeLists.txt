@@ -19,6 +19,7 @@ endif()
 option(UniversalBinary "Build universal binary for mac" ON)
 option(SONOBUS_ENABLE_ASIO "Enable ASIO support on Windows. Requires Steinberg ASIO SDK at ../asiosdk/common." ON)
 set(SONOBUS_FFMPEG_PATH "" CACHE FILEPATH "Bundled FFmpeg executable for H.264 camera publishing")
+option(SONOBUS_BUILD_VIDEO_TESTS "Build the camera parser and UTF-8 self-check" OFF)
 
 if (APPLE)
     set (CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE INTERNAL "")
@@ -85,6 +86,26 @@ add_subdirectory(deps/juce EXCLUDE_FROM_ALL )
 
 
 juce_add_modules(deps/ff_meters)
+
+if (SONOBUS_BUILD_VIDEO_TESTS)
+    enable_testing()
+    juce_add_console_app(SonoBusVideoTests PRODUCT_NAME "SonoBus Video Tests")
+    target_sources(SonoBusVideoTests PRIVATE
+        tests/VideoRelaySupportTest.cpp
+        Source/VideoRelaySupport.cpp
+        Source/VideoRelaySupport.h)
+    target_link_libraries(SonoBusVideoTests PRIVATE juce::juce_core)
+    target_compile_features(SonoBusVideoTests PRIVATE cxx_std_17)
+    add_test(NAME SonoBusVideoTests COMMAND SonoBusVideoTests)
+endif()
+
+if (WIN32)
+    add_executable(SonoBusVideoCaptureHelper Source/WindowsVideoCaptureHelper.cpp)
+    target_compile_features(SonoBusVideoCaptureHelper PRIVATE cxx_std_17)
+    target_compile_definitions(SonoBusVideoCaptureHelper PRIVATE WINVER=0x0A00 _WIN32_WINNT=0x0A00 NOMINMAX)
+    target_link_libraries(SonoBusVideoCaptureHelper PRIVATE windowsapp mfplat)
+    set_target_properties(SonoBusVideoCaptureHelper PROPERTIES OUTPUT_NAME "SonoBusVideoCaptureHelper")
+endif()
 
 
 
@@ -347,6 +368,8 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         Source/VideoRelayView.h
         Source/VideoRelayClient.cpp
         Source/VideoRelayClient.h
+        Source/VideoRelaySupport.cpp
+        Source/VideoRelaySupport.h
         Source/VideoPairingStore.cpp
         Source/VideoPairingStore.h
         Source/VersionInfo.cpp
@@ -458,6 +481,20 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
                 XCODE_GENERATE_SCHEME ON)
         endif()
     endforeach()
+
+    if(WIN32 AND TARGET SonoBusVideoCaptureHelper)
+        foreach(format_target ${formats})
+            if(TARGET ${target_name}_${format_target})
+                add_dependencies(${target_name}_${format_target} SonoBusVideoCaptureHelper)
+                add_custom_command(TARGET ${target_name}_${format_target} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "$<TARGET_FILE:SonoBusVideoCaptureHelper>"
+                        "$<TARGET_FILE_DIR:${target_name}_${format_target}>/SonoBusVideoCaptureHelper.exe"
+                    COMMENT "Bundling Windows SharedReadOnly camera helper")
+            endif()
+        endforeach()
+    endif()
+
 
     if(SONOBUS_FFMPEG_PATH AND EXISTS "${SONOBUS_FFMPEG_PATH}")
         get_filename_component(SONOBUS_FFMPEG_NAME "${SONOBUS_FFMPEG_PATH}" NAME)

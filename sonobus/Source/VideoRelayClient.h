@@ -4,6 +4,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <functional>
+#include "VideoRelaySupport.h"
 
 class VideoRelayClient final : private juce::Thread
 {
@@ -12,6 +14,7 @@ public:
     {
         idle,
         unpaired,
+        awaitingAuthorization,
         connecting,
         waitingForAdmin,
         startingCamera,
@@ -20,6 +23,8 @@ public:
         error
     };
 
+    using EnrollmentHandler = std::function<bool(const juce::String&, const juce::MemoryBlock&, juce::String&)>;
+
     VideoRelayClient();
     ~VideoRelayClient() override;
 
@@ -27,23 +32,18 @@ public:
                const juce::String& group,
                const juce::String& user,
                const juce::String& pairingId,
-               const juce::MemoryBlock& pairingKey);
+               const juce::MemoryBlock& pairingKey,
+               const juce::String& enrollmentSecret,
+               EnrollmentHandler enrollmentHandler);
     void stop();
 
     Status getStatus() const noexcept { return status.load(); }
     juce::String getStatusText() const;
     juce::String getActiveCamera() const;
 
-    static bool parsePairingText(const juce::String& text,
-                                 juce::String& pairingId,
-                                 juce::MemoryBlock& pairingKey);
 
 private:
-    struct CameraDevice
-    {
-        juce::String id;
-        juce::String name;
-    };
+    using CameraDevice = sonobus::video::CameraDevice;
 
     struct CameraMode
     {
@@ -67,19 +67,23 @@ private:
 
     void run() override;
     bool pollControl(DesiredState& desired, int& pollAfterMs);
+    bool requestEnrollment(int& pollAfterMs);
     juce::var makeStatusPayload() const;
-    juce::Array<CameraDevice> getCameraDevices(const juce::String& ffmpegPath) const;
+    juce::Array<CameraDevice> getCameraDevices(const juce::String& ffmpegPath, juce::String& error) const;
     juce::Array<CameraMode> get60FpsCameraModes(const juce::String& ffmpegPath,
-                                                const juce::String& cameraDeviceId) const;
+                                                const juce::String& cameraDeviceId,
+                                                juce::String& error) const;
     CameraMode findHighest60FpsMode(const juce::String& ffmpegPath,
                                     const juce::String& cameraDeviceId);
     bool probeCameraMode(const juce::String& ffmpegPath,
                          const juce::String& cameraDeviceId,
-                         CameraMode mode) const;
+                         CameraMode mode,
+                         juce::String& error) const;
     bool probeEncoder(const juce::String& ffmpegPath,
                       const juce::String& cameraDeviceId,
                       CameraMode mode,
-                      const juce::String& encoder) const;
+                      const juce::String& encoder,
+                      juce::String& error) const;
     bool startPublisher(const juce::String& ffmpegPath,
                         const juce::Array<CameraDevice>& devices,
                         const DesiredState& desired,
@@ -87,6 +91,7 @@ private:
     void stopPublisher();
     void readPublisherProgress();
     juce::String findFfmpeg() const;
+    juce::String findWindowsCaptureHelper() const;
     juce::StringArray availableEncoders(const juce::String& ffmpegPath) const;
     juce::StringArray captureArguments(const juce::String& cameraDeviceId, CameraMode mode) const;
     juce::StringArray encoderArguments(const juce::String& encoder) const;
@@ -98,6 +103,8 @@ private:
     void setStatus(Status newStatus, const juce::String& error = {});
 
     static juce::String hmacSha256Base64Url(const juce::MemoryBlock& key, const juce::String& value);
+    static juce::MemoryBlock deriveEnrollmentKey(const juce::MemoryBlock& secret, const juce::String& group,
+                                                 const juce::String& user, const juce::String& clientId);
     static juce::String toBase64Url(const void* data, size_t size);
     static bool fromBase64Url(const juce::String& value, juce::MemoryBlock& result);
     static juce::String percentEncode(const juce::String& value);
@@ -109,17 +116,21 @@ private:
     juce::String user;
     juce::String pairingId;
     juce::MemoryBlock pairingKey;
+    juce::MemoryBlock enrollmentKey;
+    EnrollmentHandler enrollmentHandler;
     juce::String clientId;
     juce::Array<CameraDevice> cameras;
     juce::String activeCameraId;
     juce::String activeCamera;
     juce::String activeEncoder;
     juce::String lastError;
+    juce::String cameraError;
     CameraMode activeMode;
     double actualFps = 0.0;
     int actualBitrate = 0;
     juce::uint64 sequence = 0;
     juce::String progressBuffer;
+    bool pairingRejected = false;
 
     std::atomic<Status> status { Status::idle };
     std::unique_ptr<juce::ChildProcess> publisher;

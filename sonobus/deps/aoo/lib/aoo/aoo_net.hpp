@@ -63,6 +63,9 @@ public:
 
     virtual int32_t get_state_json(char *buffer, int32_t size) = 0;
 
+    virtual int32_t get_video_enrollment_secret(const char *group, const char *user, const char *address,
+                                                char *buffer, int32_t size) = 0;
+
     virtual int32_t kick(const char *group, const char *user, const char *address) = 0;
 
     virtual int32_t ban(const char *group, const char *user, const char *address,
@@ -147,6 +150,8 @@ public:
     // handle events (threadsafe, but not reentrant)
     // will call the event handler function one or more times
     virtual int32_t handle_events(aoo_eventhandler fn, void *user) = 0;
+
+    virtual int32_t get_video_enrollment_secret(char *buffer, int32_t size) const = 0;
 
     // LATER add API functions to set options and do additional peer communication (chat, OSC messages, etc.)
 protected:

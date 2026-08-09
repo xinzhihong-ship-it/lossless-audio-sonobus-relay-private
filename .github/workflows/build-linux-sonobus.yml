@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - private-main
     tags:
       - "v*"
     paths:

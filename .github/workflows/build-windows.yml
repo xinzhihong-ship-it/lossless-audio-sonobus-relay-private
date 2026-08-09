@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - private-main
     tags:
       - "v*"
     paths:
@@ -49,11 +50,11 @@ jobs:
           $readme = Get-ChildItem -Path $extract -Filter README.txt -File -Recurse | Select-Object -First 1
           if ($null -eq $ffmpeg -or $null -eq $license -or $null -eq $readme) { throw "FFmpeg runtime archive is incomplete." }
           $versionInfo = (& $ffmpeg.FullName -hide_banner -version 2>&1 | Out-String)
-          $devices = (& $ffmpeg.FullName -hide_banner -devices 2>&1 | Out-String)
+          $demuxers = (& $ffmpeg.FullName -hide_banner -demuxers 2>&1 | Out-String)
           $encoders = (& $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String)
           $muxers = (& $ffmpeg.FullName -hide_banner -muxers 2>&1 | Out-String)
           if ($versionInfo -notmatch "ffmpeg version 7\.1\.1") { throw "Unexpected FFmpeg version." }
-          if ($devices -notmatch "\bdshow\b") { throw "FFmpeg runtime lacks DirectShow capture." }
+          if ($demuxers -notmatch "\brawvideo\b") { throw "FFmpeg runtime lacks raw NV12 input." }
           if ($encoders -notmatch "\b(h264_nvenc|h264_qsv|h264_amf|h264_mf|libx264)\b") { throw "FFmpeg runtime lacks an H.264 encoder." }
           if ($muxers -notmatch "\brtsp\b") { throw "FFmpeg runtime lacks the RTSP muxer." }
           "SONOBUS_FFMPEG_PATH=$($ffmpeg.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -68,6 +69,7 @@ jobs:
           -G "Visual Studio 17 2022"
           -A x64
           -DSONOBUS_ENABLE_ASIO=OFF
+          -DSONOBUS_BUILD_VIDEO_TESTS=ON
           -DSONOBUS_FFMPEG_PATH="$env:SONOBUS_FFMPEG_PATH"
           -B build
 
@@ -75,6 +77,11 @@ jobs:
         shell: pwsh
         working-directory: sonobus
         run: cmake --build build --config Release --parallel
+
+      - name: Test video protocol and UTF-8
+        shell: pwsh
+        working-directory: sonobus
+        run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Verify bundled FFmpeg runtimes
         shell: pwsh
@@ -89,6 +96,16 @@ jobs:
             if (-not (Test-Path $runtime)) { throw "Missing bundled runtime: $runtime" }
             if ((Get-FileHash -Algorithm SHA256 $runtime).Hash -ne $sourceHash) { throw "Bundled runtime checksum mismatch: $runtime" }
           }
+          $helpers = @(
+            "sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBusVideoCaptureHelper.exe",
+            "sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3/Contents/x86_64-win/SonoBusVideoCaptureHelper.exe",
+            "sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3/Contents/x86_64-win/SonoBusVideoCaptureHelper.exe"
+          )
+          foreach ($helper in $helpers) {
+            if (-not (Test-Path $helper)) { throw "Missing bundled SharedReadOnly helper: $helper" }
+          }
+          & $helpers[0] --list | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "SharedReadOnly camera helper smoke test failed." }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -102,6 +119,7 @@ jobs:
           Copy-Item -Recurse -Force sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3 artifacts/windows-x64/
           Copy-Item -Recurse -Force sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3 artifacts/windows-x64/
           Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg.exe artifacts/windows-x64/
+          Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBusVideoCaptureHelper.exe artifacts/windows-x64/
           Copy-Item -Force $env:SONOBUS_FFMPEG_LICENSE artifacts/windows-x64/ffmpeg-LICENSE
           Copy-Item -Force $env:SONOBUS_FFMPEG_README artifacts/windows-x64/ffmpeg-README.txt
           Copy-Item -Force docs/ffmpeg-runtime.md artifacts/windows-x64/ffmpeg-RUNTIME.md

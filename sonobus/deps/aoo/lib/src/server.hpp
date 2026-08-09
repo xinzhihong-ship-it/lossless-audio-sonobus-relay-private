@@ -53,6 +53,7 @@ public:
     ip_address public_address;
     ip_address local_address;
     int64_t token;
+    std::string video_enrollment_secret;
 private:
     std::shared_ptr<user> user_;
     ip_address addr_;
@@ -159,6 +160,9 @@ public:
     int32_t handle_events(aoo_eventhandler fn, void *user) override;
 
     int32_t get_state_json(char *buffer, int32_t size) override;
+
+    int32_t get_video_enrollment_secret(const char *group, const char *user, const char *address,
+                                        char *buffer, int32_t size) override;
 
     int32_t kick(const char *group, const char *user, const char *address) override;
 

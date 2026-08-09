@@ -25,7 +25,7 @@ Docker Compose 运行：
 | `19091` | UDP | MediaMTX WebRTC ICE 媒体 |
 | `19092` | TCP | RTSP 发布、OBS Media Source 读取 |
 
-`19094/TCP` 只绑定服务器 `127.0.0.1`，**不要**加入公网安全组。MediaMTX Control API `9997` 也不映射到主机。
+`19094/TCP` 只绑定服务器 `127.0.0.1`，**不要**加入公网安全组。Connection Server 管理端口 `18098` 和 MediaMTX Control API `9997` 只在容器网络内使用，均不得映射到宿主机；`18098` 还必须配置独立 Bearer token。
 
 ## 1. 获取并上传部署包
 
@@ -64,7 +64,7 @@ sudo tar -xzf /home/ubuntu/lossless-audio-server-linux-docker.tar.gz \
 sudo chown -R ubuntu:ubuntu /opt/lossless-audio
 ```
 
-若旧 `.env` 缺少新变量，请对照 `.env.example` 补齐，尤其是 `PUBLIC_VIDEO_HOST`、`MEDIA_MTX_API_PASSWORD` 和 `MEDIA_MUXER_PASSWORD`。
+若旧 `.env` 缺少新变量，请对照 `.env.example` 补齐，尤其是 `PUBLIC_VIDEO_HOST`、`MEDIA_MTX_API_PASSWORD`、`MEDIA_MUXER_PASSWORD` 和 `CONNECTION_SERVER_ADMIN_TOKEN`。
 
 ## 3. 配置 `.env`
 
@@ -99,6 +99,7 @@ POSTGRES_PASSWORD=<数据库强密码>
 
 UDP_RELAY_PORT=9000
 CONNECTION_SERVER_PORT=10998
+CONNECTION_SERVER_ADMIN_TOKEN=<另一条仅容器内使用的长随机密钥>
 WEB_BRIDGE_GROUP=web
 WEB_BRIDGE_USERNAME=web-bridge
 WEB_BRIDGE_GROUP_PASSWORD=
@@ -170,8 +171,8 @@ http://127.0.0.1:19094/admin
 
 - 查看 SonoBus 音频连接、视频控制会话和 MediaMTX 路径。
 - 踢出/封禁普通用户；系统 `web-bridge` 不显示这些操作。
-- 为当前在线的 group/user 生成一次性摄像头配对信息。
-- 独占控制每组一路摄像头的开关和设备。
+- 确认已认证 SonoBus 客户端的待授权请求；密钥由客户端自动领取并保存，不使用可见授权码。
+- 独占管理每组一路摄像头的开关和设备；Windows 采集本身使用 `SharedReadOnly`，不会抢占物理摄像头。
 - 查看 codec、分辨率、FPS、bitrate、publisher/viewer 和音频合流状态。
 - 打开浏览器观看地址，或复制 OBS RTSP 地址。
 
@@ -187,7 +188,7 @@ Relay Server:       <服务器IP>
 Relay Port:         9000
 ```
 
-客户端不填写视频端口。首次配对流程见 [`video-relay.md`](video-relay.md)。
+客户端不填写视频端口或授权码。加入群组后会自动提交待授权请求，管理员只需在后台确认一次；详见 [`video-relay.md`](video-relay.md)。
 
 群组 `studio`：
 
@@ -233,7 +234,7 @@ docker compose logs --tail=200 mediamtx server
 
 ### 摄像头不启动
 
-确认用户仍在对应 SonoBus group、配对未撤销、管理员已开启设备。客户端应显示 helper 的模式探测或错误；摄像头/网络恢复后无需重启 DAW。
+确认用户仍在对应 SonoBus group、授权未撤销、管理员已选择并开启设备。Windows 不会抢占摄像头或自动换到另一台：若当前共享流低于真实 60 FPS，或设备已被其他程序独占，后台会显示原因并按最高 30 秒间隔重试；管理员可关闭占用程序或选择另一台。摄像头/网络恢复后无需重启 DAW。
 
 ### 动态群组无音频
 

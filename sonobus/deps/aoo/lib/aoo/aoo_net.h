@@ -196,6 +196,9 @@ AOO_API int32_t aoonet_server_handle_events(aoonet_server *server,
 
 AOO_API int32_t aoonet_server_get_state_json(aoonet_server *server, char *buffer, int32_t size);
 
+AOO_API int32_t aoonet_server_get_video_enrollment_secret(aoonet_server *server, const char *group, const char *user,
+                                                          const char *address, char *buffer, int32_t size);
+
 AOO_API int32_t aoonet_server_kick(aoonet_server *server, const char *group, const char *user, const char *address);
 
 AOO_API int32_t aoonet_server_ban(aoonet_server *server, const char *group, const char *user, const char *address,

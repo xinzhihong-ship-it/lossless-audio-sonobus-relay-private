@@ -29,6 +29,7 @@ export type ConnectionServerBanRecord = Required<Pick<ConnectionServerKickReques
 
 export type ConnectionServerAdmin = {
   connections(): Promise<ConnectionServerConnection[]>;
+  enrollmentSecret(request: { group: string; user: string; address: string }): Promise<string>;
   kick(request: ConnectionServerKickRequest): Promise<{ kicked: number }>;
   ban(request: ConnectionServerBanRequest): Promise<{ banned: number; expiresAt: string | null }>;
   listBans(): Promise<ConnectionServerBanRecord[]>;
@@ -36,11 +37,18 @@ export type ConnectionServerAdmin = {
 };
 
 export class HttpConnectionServerAdmin implements ConnectionServerAdmin {
-  constructor(private baseUrl: string) {}
+  constructor(private baseUrl: string, private token: string) {
+    if (!token) throw new Error("Connection server admin token is required.");
+  }
 
   async connections(): Promise<ConnectionServerConnection[]> {
     const body = await this.request<{ connections: ConnectionServerConnection[] }>("/connections");
     return body.connections ?? [];
+  }
+
+  async enrollmentSecret(request: { group: string; user: string; address: string }): Promise<string> {
+    const body = await this.request<{ secret: string }>("/video/enrollment-secret", request);
+    return body.secret;
   }
 
   async kick(request: ConnectionServerKickRequest): Promise<{ kicked: number }> {
@@ -63,7 +71,10 @@ export class HttpConnectionServerAdmin implements ConnectionServerAdmin {
   private async request<T>(path: string, body?: unknown): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: body === undefined ? "GET" : "POST",
-      headers: body === undefined ? undefined : { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${this.token}`,
+        ...(body === undefined ? {} : { "content-type": "application/json" })
+      },
       body: body === undefined ? undefined : JSON.stringify(body)
     });
     if (!response.ok) {

@@ -20,6 +20,8 @@ The source archive and complete reproducible configuration are available from th
 - Archive: <https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip>
 - Archive SHA-256: `04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4`
 - FFmpeg source revision reported by the distributor: <https://github.com/FFmpeg/FFmpeg/commit/db69d06eee>
+- Capture boundary: `SonoBusVideoCaptureHelper.exe` uses Windows `MediaCapture` in `SharedReadOnly` mode and writes NV12 to FFmpeg stdin; FFmpeg never opens DirectShow or owns the camera.
+- Required FFmpeg path: rawvideo/NV12 input, H.264 encoder, and RTSP/TCP muxer.
 - License: GPL-3.0; the unmodified distributor `LICENSE` and `README.txt` are included with every Windows package.
 
 The Windows runtime is distributed alongside GPLv3 SonoBus. The included distributor README records its build configuration, external libraries, versions, and corresponding source revision.

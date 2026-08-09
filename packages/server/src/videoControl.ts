@@ -1,8 +1,11 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import type { ConnectionServerAdmin } from "./connectionServerAdmin.js";
 import { ingestVideoPath, videoRoom, type MediaMtxAdmin, type MediaMtxInternalUser } from "./mediaMtx.js";
 import type { Store, VideoControlRecord } from "./store.js";
 
 const SESSION_TTL_MS = 15_000;
+const ENROLLMENT_TTL_MS = 60_000;
+const MAX_PENDING_ENROLLMENTS = 256;
 
 export type VideoCamera = { id: string; name: string };
 
@@ -41,6 +44,32 @@ export type VideoControlPollResponse = {
   serverTime: number;
 };
 
+export type VideoEnrollmentInput = {
+  group?: string;
+  user?: string;
+  clientId?: string;
+  timestamp?: number;
+  nonce?: string;
+  signature?: string;
+};
+
+export type VideoEnrollmentResponse = VideoControlPollResponse;
+
+export type VideoEnrollmentView = {
+  requestId: string;
+  group: string;
+  user: string;
+  clientId: string;
+  address: string;
+  requestedAt: number;
+  lastSeenAt: number;
+};
+
+type PendingEnrollment = VideoEnrollmentView & {
+  key: Buffer;
+  approvedPairingId?: string;
+};
+
 type ControlSession = {
   pairingId: string;
   group: string;
@@ -57,6 +86,7 @@ export class VideoControlService {
   private readonly encryptionKey: Buffer;
   private readonly sessions = new Map<string, ControlSession>();
   private readonly usedNonces = new Map<string, number>();
+  private readonly pendingEnrollments = new Map<string, PendingEnrollment>();
   private readonly pruneTimer: NodeJS.Timeout;
   private stateChangeHandler?: () => void | Promise<void>;
   private pruning = false;
@@ -81,21 +111,87 @@ export class VideoControlService {
     this.stateChangeHandler = handler;
   }
 
-  async createPairing(group: string, user: string, groupPassword = ""): Promise<{ pairingId: string; pairingCode: string }> {
-    const existing = await this.store.getVideoControl(group, user);
-    const key = randomBytes(32);
-    const pairingId = randomUUID();
-    await this.store.createVideoPairing({
-      pairingId,
-      group,
-      user,
-      pairingKeyCiphertext: encryptKey(key, this.encryptionKey),
-      groupPasswordCiphertext: groupPassword ? encryptKey(Buffer.from(groupPassword, "utf8"), this.encryptionKey) : undefined
-    });
-    if (existing) this.sessions.delete(existing.pairingId);
-    await this.syncMediaMtxAuth();
-    await this.notifyStateChange();
-    return { pairingId, pairingCode: key.toString("base64url") };
+
+  async requestEnrollment(
+    input: VideoEnrollmentInput,
+    address: string,
+    connectionServer: ConnectionServerAdmin
+  ): Promise<VideoEnrollmentResponse> {
+    const group = cleanString(input.group, 77);
+    const user = cleanString(input.user, 80);
+    const clientId = cleanString(input.clientId, 80);
+    const nonce = cleanString(input.nonce, 120);
+    const timestamp = Number(input.timestamp);
+    const now = Date.now();
+    if (!videoRoom(group) || !user || !clientId || !address || nonce.length < 16
+        || !Number.isSafeInteger(timestamp) || Math.abs(now - timestamp) > 60_000) {
+      throw new Error("Invalid video enrollment request.");
+    }
+    const replayKey = `enroll\0${clientId}\0${nonce}`;
+    if (this.usedNonces.has(replayKey)) throw new Error("Video enrollment request was replayed.");
+
+    const mapKey = `${group}\0${user}\0${clientId}`;
+    let pending = this.pendingEnrollments.get(mapKey);
+    let key = pending?.key;
+    let expected = key ? sign(key, enrollmentSignatureInput(group, user, clientId, timestamp, nonce)) : "";
+    if (!key || !safeEqual(input.signature, expected)) {
+      const secret = await connectionServer.enrollmentSecret({ group, user, address });
+      if (!/^[0-9a-f]{64}$/i.test(secret)) throw new Error("Invalid SonoBus enrollment capability.");
+      key = deriveEnrollmentKey(Buffer.from(secret, "hex"), group, user, clientId);
+      expected = sign(key, enrollmentSignatureInput(group, user, clientId, timestamp, nonce));
+      if (!safeEqual(input.signature, expected)) throw new Error("Invalid video enrollment signature.");
+      if (pending && !pending.key.equals(key)) pending = undefined;
+    }
+
+    if (!pending) {
+      await this.pruneExpiredSessions();
+      if (this.pendingEnrollments.size >= MAX_PENDING_ENROLLMENTS) throw new Error("Too many pending video enrollments.");
+      pending = {
+        requestId: randomUUID(),
+        group,
+        user,
+        clientId,
+        address,
+        requestedAt: now,
+        lastSeenAt: now,
+        key
+      };
+      this.pendingEnrollments.set(mapKey, pending);
+      await this.notifyStateChange();
+    } else {
+      pending.lastSeenAt = now;
+      pending.address = address;
+    }
+    this.usedNonces.set(replayKey, now + 60_000);
+
+    const payload = Buffer.from(JSON.stringify({
+      type: "enrollment",
+      state: pending.approvedPairingId ? "approved" : "pending",
+      pairingId: pending.approvedPairingId
+    })).toString("base64url");
+    return {
+      payload,
+      signature: sign(key, `enrollment-response\n${nonce}\n${payload}`),
+      pollAfterMs: 1000,
+      serverTime: now
+    };
+  }
+
+  async listPendingEnrollments(): Promise<VideoEnrollmentView[]> {
+    await this.pruneExpiredSessions();
+    return [...this.pendingEnrollments.values()]
+      .filter((pending) => !pending.approvedPairingId)
+      .map(({ key: _key, approvedPairingId: _approvedPairingId, ...view }) => view);
+  }
+
+  async approveEnrollment(requestId: string, groupPassword = ""): Promise<{ pairingId: string }> {
+    const pending = [...this.pendingEnrollments.values()].find((candidate) => candidate.requestId === requestId);
+    if (!pending || pending.lastSeenAt + ENROLLMENT_TTL_MS <= Date.now())
+      throw new Error("Video enrollment request expired; reopen the client video panel.");
+    const pairingId = await this.createPairingWithKey(pending.group, pending.user, pending.key, groupPassword);
+    pending.approvedPairingId = pairingId;
+    pending.lastSeenAt = Date.now();
+    return { pairingId };
   }
 
   async list(): Promise<VideoControlView[]> {
@@ -180,6 +276,8 @@ export class VideoControlService {
     };
     this.sessions.set(pairingId, session);
     this.usedNonces.set(replayKey, now + 60_000);
+    for (const [mapKey, pending] of this.pendingEnrollments)
+      if (pending.approvedPairingId === pairingId) this.pendingEnrollments.delete(mapKey);
     if (isNewSession) {
       await this.syncMediaMtxAuth();
       await this.notifyStateChange();
@@ -250,6 +348,7 @@ export class VideoControlService {
     clearInterval(this.pruneTimer);
     this.sessions.clear();
     this.usedNonces.clear();
+    this.pendingEnrollments.clear();
     await this.syncMediaMtxAuth();
   }
 
@@ -268,6 +367,12 @@ export class VideoControlService {
       for (const [nonce, expiresAt] of this.usedNonces) {
         if (expiresAt <= now) this.usedNonces.delete(nonce);
       }
+      for (const [mapKey, pending] of this.pendingEnrollments) {
+        if (pending.lastSeenAt + ENROLLMENT_TTL_MS <= now) {
+          this.pendingEnrollments.delete(mapKey);
+          changed = true;
+        }
+      }
       if (changed) {
         await this.syncMediaMtxAuth();
         await this.notifyStateChange();
@@ -276,6 +381,24 @@ export class VideoControlService {
       this.pruning = false;
     }
   }
+
+  private async createPairingWithKey(group: string, user: string, key: Buffer, groupPassword: string): Promise<string> {
+    if (key.length !== 32) throw new Error("Invalid video pairing key.");
+    const existing = await this.store.getVideoControl(group, user);
+    const pairingId = randomUUID();
+    await this.store.createVideoPairing({
+      pairingId,
+      group,
+      user,
+      pairingKeyCiphertext: encryptKey(key, this.encryptionKey),
+      groupPasswordCiphertext: groupPassword ? encryptKey(Buffer.from(groupPassword, "utf8"), this.encryptionKey) : undefined
+    });
+    if (existing) this.sessions.delete(existing.pairingId);
+    await this.syncMediaMtxAuth();
+    await this.notifyStateChange();
+    return pairingId;
+  }
+
 
   private async notifyStateChange(): Promise<void> {
     await this.stateChangeHandler?.();
@@ -306,6 +429,18 @@ function publishPassword(session: ControlSession): string {
 
 function pollSignatureInput(pairingId: string, clientId: string, timestamp: number, sequence: number, nonce: string, status: string): string {
   return `poll\n${pairingId}\n${clientId}\n${timestamp}\n${sequence}\n${nonce}\n${status}`;
+}
+
+function enrollmentSignatureInput(group: string, user: string, clientId: string, timestamp: number, nonce: string): string {
+  return `enroll\n${group}\n${user}\n${clientId}\n${timestamp}\n${nonce}`;
+}
+
+function deriveEnrollmentKey(secret: Buffer, group: string, user: string, clientId: string): Buffer {
+  return createHash("sha256")
+    .update("sonobus-video-enrollment-v1\0")
+    .update(secret)
+    .update(`\0${group}\0${user}\0${clientId}`)
+    .digest();
 }
 
 function cleanStatus(value: Record<string, unknown>): VideoClientStatus {

@@ -4,6 +4,7 @@ import { once } from "node:events";
 import dgram from "node:dgram";
 import http from "node:http";
 import WebSocket from "ws";
+import { createHash, createHmac } from "node:crypto";
 import { decodeAudioFrame, decodeRelayPacket, encodeAudioFrame, encodeRelayPacket } from "@lossless-audio/protocol";
 import { createApp } from "./app.js";
 import type { ConnectionServerAdmin } from "./connectionServerAdmin.js";
@@ -117,7 +118,7 @@ test("admin web page is served for browser-based remote administration", async (
     assert.match(html, /startsWith\("media-mix-"\)/);
     assert.match(html, /class="connections-table"/);
     assert.match(html, /refreshConnections\(true\)/);
-    assert.match(html, /设备列表不可用/);
+    assert.match(html, /等待客户端申请/);
     assert.match(html, /客户端未上报设备/);
     assert.match(html, /await activeRefresh/);
     assert.match(html, /localStorage\.getItem\(tokenKey\) !== token/);
@@ -1710,9 +1711,14 @@ class FakeConnectionServerAdmin implements ConnectionServerAdmin {
   lastBan?: { type?: string; group?: string; user?: string; address?: string; ttlSeconds?: number };
   lastUnban?: unknown;
   nextBanResult: Awaited<ReturnType<ConnectionServerAdmin["ban"]>> = { banned: 1, expiresAt: "2026-06-13T10:02:00.000Z" };
+  enrollmentSecretValue = "11".repeat(32);
 
   async connections() {
     return this.connectionsList;
+  }
+
+  async enrollmentSecret() {
+    return this.enrollmentSecretValue;
   }
 
   async kick(request: unknown) {
@@ -1846,6 +1852,7 @@ function encodeSbr1(header: Record<string, unknown>, payload: Buffer, type = 1):
 }
 
 test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs", async () => {
+  const connectionServer = new FakeConnectionServerAdmin();
   const app = await createApp({
     jwtSecret: "test-secret",
     adminUsername: "admin",
@@ -1856,6 +1863,7 @@ test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs",
     videoRtspPort: 19092,
     mediaMuxerUsername: "media-muxer",
     mediaMuxerPassword: "muxer-secret",
+    connectionServer,
     mediaMtxAdmin: {
       async paths() {
         return [{ name: "SB_studio", ready: true, tracks2: [{ codec: "H264", codecProps: { width: 1920, height: 1080 } }, { codec: "Opus" }] }];
@@ -1874,17 +1882,45 @@ test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs",
 
 
     const adminToken = await login(baseUrl, "admin", "admin-pass");
+    const removedPairingRoute = await fetch(`${baseUrl}/admin/video/pair`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ group: "studio", user: "alice" })
+    });
+    assert.equal(removedPairingRoute.status, 404, "plaintext pairing-key route must stay removed");
+
+    const group = "studio";
+    const user = "alice";
+    const clientId = "windows-client";
+    const enrollmentKey = createHash("sha256")
+      .update("sonobus-video-enrollment-v1\0")
+      .update(Buffer.from(connectionServer.enrollmentSecretValue, "hex"))
+      .update(`\0${group}\0${user}\0${clientId}`)
+      .digest();
+    const enroll = async (nonce: string) => {
+      const timestamp = Date.now();
+      return await postJson<{ payload: string; signature: string }>(baseUrl, "/video/control/enroll", {
+        group, user, clientId, timestamp, nonce,
+        signature: createHmac("sha256", enrollmentKey)
+          .update(`enroll\n${group}\n${user}\n${clientId}\n${timestamp}\n${nonce}`)
+          .digest("base64url")
+      });
+    };
+    const firstEnrollment = await enroll("first-enrollment-nonce-123");
+    assert.doesNotMatch(JSON.stringify(firstEnrollment), /pairingCode|1111111111111111/);
+    const pendingState = await get<{ enrollments: Array<{ requestId: string }> }>(baseUrl, "/admin/video/controls", adminToken);
+    assert.equal(pendingState.enrollments.length, 1);
+    const approved = await post<{ pairingId: string }>(baseUrl, "/admin/video/enrollment/approve", adminToken, {
+      requestId: pendingState.enrollments[0]!.requestId
+    });
+    const approvedEnrollment = await enroll("second-enrollment-nonce-456");
+    const approvedPayload = JSON.parse(Buffer.from(approvedEnrollment.payload, "base64url").toString("utf8"));
+    assert.equal(approvedPayload.pairingId, approved.pairingId);
+
     await assert.rejects(
-      post(baseUrl, "/admin/video/pair", adminToken, { group: "studio", user: "media-mix-studio" }),
+      post(baseUrl, "/admin/video/control", adminToken, { group, user, enabled: true, cameraDeviceId: null }),
       /failed with 400/
     );
-    const pairing = await post<{ pairingId: string; pairingCode: string }>(baseUrl, "/admin/video/pair", adminToken, {
-      group: "studio",
-      user: "alice"
-    });
-    assert.ok(pairing.pairingId);
-    assert.ok(pairing.pairingCode);
-
     await post(baseUrl, "/admin/video/control", adminToken, { group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a" });
     const response = await get<{
       videoControls: Array<{ group: string; user: string; enabled: boolean; cameraDeviceId?: string }>;
@@ -1898,8 +1934,11 @@ test("MediaMTX video routes expose admin-only camera control and RTSP OBS URLs",
     assert.equal(response.videoUrls.rtspBase, "rtsp://video.example.test:19092");
 
     const html = await (await fetch(`${baseUrl}/admin`)).text();
-    assert.match(html, /生成配对码/);
-    assert.match(html, /自动选择最高 60 FPS/);
+    assert.match(html, /授权摄像头/);
+    assert.match(html, /无需输入授权码/);
+    assert.doesNotMatch(html, /SBPAIR1|生成配对码/);
+    assert.match(html, /请选择摄像头/);
+    assert.doesNotMatch(html, /自动选择/);
     assert.match(html, /OBS 媒体源 RTSP/);
     assert.doesNotMatch(html, /SBV1|pendingFrame|JPEG/);
   } finally {

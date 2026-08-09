@@ -28,6 +28,11 @@ try {
     (Join-Path $pluginDirs[0] "Contents/x86_64-win/ffmpeg.exe"),
     (Join-Path $pluginDirs[1] "Contents/x86_64-win/ffmpeg.exe")
   )
+  $helpers = @(
+    (Join-Path $appDir "SonoBusVideoCaptureHelper.exe"),
+    (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusVideoCaptureHelper.exe"),
+    (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusVideoCaptureHelper.exe")
+  )
   $required = @(
     (Join-Path $appDir "SonoBus.exe"),
     (Join-Path $appDir "ffmpeg-LICENSE"),
@@ -35,7 +40,7 @@ try {
     (Join-Path $appDir "ffmpeg-RUNTIME.md"),
     (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBus.vst3"),
     (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusInstrument.vst3")
-  ) + $runtimes
+  ) + $runtimes + $helpers
 
   foreach ($path in $required) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Installer omitted: $path" }
@@ -47,6 +52,9 @@ try {
       throw "Installed FFmpeg checksum mismatch: $runtime"
     }
   }
+
+  & $helpers[0] --list | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Installed SharedReadOnly camera helper smoke test failed." }
 
   $uninstaller = Get-ChildItem -Path $appDir -Filter "unins*.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($null -eq $uninstaller) { throw "Installer omitted its uninstaller." }

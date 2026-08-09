@@ -60,10 +60,29 @@ int bitrateFor(int width, int height)
     return 3000000;
 }
 
-juce::String tail(const juce::String& text, int maxLength = 500)
+juce::String cameraFailureMessage(const juce::String& output)
 {
-    const auto lines = juce::StringArray::fromLines(text.trim());
-    return lines.isEmpty() ? text.trim().substring(0, maxLength) : lines[lines.size() - 1].substring(0, maxLength);
+    if (output.containsIgnoreCase("SONOBUS_ERROR=busy"))
+        return sonobus::video::translated(u8"摄像头被其他程序独占；请在后台选择另一台，或关闭占用程序后等待重试");
+    if (output.containsIgnoreCase("SONOBUS_ERROR=permission"))
+        return sonobus::video::translated(u8"Windows 已拒绝摄像头权限；请允许桌面应用访问摄像头");
+    if (output.containsIgnoreCase("shared-frame-rate-below-60"))
+        return sonobus::video::translated(u8"摄像头当前共享流低于真实 60 FPS；请关闭占用程序或在后台选择另一台");
+    if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable"))
+        return sonobus::video::translated(u8"摄像头不可用或不支持共享 60 FPS 捕获");
+    using sonobus::video::CameraFailure;
+    switch (sonobus::video::classifyCameraFailure(output))
+    {
+        case CameraFailure::busy:
+            return sonobus::video::translated(u8"摄像头正被其他程序占用；请在后台选择另一台，或关闭占用程序后等待重试");
+        case CameraFailure::permissionDenied:
+            return sonobus::video::translated(u8"Windows 已拒绝摄像头权限；请允许桌面应用访问摄像头");
+        case CameraFailure::unavailable:
+            return sonobus::video::lastOutputLine(output);
+        case CameraFailure::none:
+            break;
+    }
+    return {};
 }
 }
 
@@ -81,7 +100,9 @@ void VideoRelayClient::start(const juce::String& host_,
                              const juce::String& group_,
                              const juce::String& user_,
                              const juce::String& pairingId_,
-                             const juce::MemoryBlock& pairingKey_)
+                             const juce::MemoryBlock& pairingKey_,
+                             const juce::String& enrollmentSecret_,
+                             EnrollmentHandler enrollmentHandler_)
 {
     stop();
     {
@@ -92,15 +113,26 @@ void VideoRelayClient::start(const juce::String& host_,
         pairingId = pairingId_.trim();
         pairingKey = pairingKey_;
         clientId = juce::Uuid().toString();
+        juce::MemoryBlock secret;
+        if (enrollmentSecret_.length() == 64) secret.loadFromHexString(enrollmentSecret_);
+        enrollmentKey = secret.getSize() == 32 ? deriveEnrollmentKey(secret, group, user, clientId) : juce::MemoryBlock();
+        enrollmentHandler = std::move(enrollmentHandler_);
         sequence = 0;
+        pairingRejected = false;
         lastError.clear();
+        cameraError.clear();
     }
-    if (host.isEmpty() || group.isEmpty() || user.isEmpty() || pairingId.isEmpty() || pairingKey.getSize() != 32)
+    if (host.isEmpty() || group.isEmpty() || user.isEmpty())
     {
-        setStatus(Status::unpaired, TRANS("请先输入管理员生成的摄像头配对信息"));
+        setStatus(Status::unpaired, sonobus::video::translated(u8"请先加入 SonoBus 群组"));
         return;
     }
-    setStatus(Status::connecting);
+    if ((pairingId.isEmpty() || pairingKey.getSize() != 32) && enrollmentKey.getSize() != 32)
+    {
+        setStatus(Status::unpaired, sonobus::video::translated(u8"当前连接不支持自动授权；请断开并重新加入群组"));
+        return;
+    }
+    setStatus(pairingId.isNotEmpty() && pairingKey.getSize() == 32 ? Status::connecting : Status::awaitingAuthorization);
     startThread();
 }
 
@@ -119,6 +151,10 @@ void VideoRelayClient::stop()
         actualFps = 0.0;
         actualBitrate = 0;
         progressBuffer.clear();
+        cameraError.clear();
+        enrollmentKey.reset();
+        enrollmentHandler = {};
+        pairingRejected = false;
     }
     status.store(Status::idle);
 }
@@ -126,29 +162,69 @@ void VideoRelayClient::stop()
 void VideoRelayClient::run()
 {
 #if ! SONOBUS_CAMERA_SUPPORTED
-    setStatus(Status::cameraUnavailable, TRANS("此平台构建不支持摄像头"));
+    setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"此平台构建不支持摄像头"));
     while (! threadShouldExit()) wait(500);
 #else
     const auto ffmpegPath = findFfmpeg();
     if (ffmpegPath.isEmpty())
-        setStatus(Status::error, TRANS("安装包中缺少 FFmpeg 视频运行时"));
+        setStatus(Status::error, sonobus::video::translated(u8"安装包中缺少 FFmpeg 视频运行时"));
 
-    auto devices = ffmpegPath.isNotEmpty() ? getCameraDevices(ffmpegPath) : juce::Array<CameraDevice>();
+    juce::String enumerationError;
+    auto devices = ffmpegPath.isNotEmpty() ? getCameraDevices(ffmpegPath, enumerationError) : juce::Array<CameraDevice>();
     auto lastDeviceRefresh = juce::Time::getMillisecondCounter();
     {
         const juce::ScopedLock lock(stateLock);
         cameras = devices;
+        cameraError = enumerationError;
     }
     DesiredState runningDesired;
     CameraMode runningMode;
+    juce::String lastAttemptRevision;
+    double nextCameraAttemptMs = 0.0;
+    int retryDelayMs = 1000;
+    double nextDeviceRefreshMs = 0.0;
+    int deviceRefreshDelayMs = 1000;
     while (! threadShouldExit())
     {
+        bool paired = false;
+        {
+            const juce::ScopedLock lock(stateLock);
+            paired = pairingId.isNotEmpty() && pairingKey.getSize() == 32;
+        }
+        if (! paired)
+        {
+            int enrollmentPollMs = pollFallbackMs;
+            if (! requestEnrollment(enrollmentPollMs))
+                setStatus(Status::error, lastError.isNotEmpty() ? lastError
+                    : sonobus::video::translated(u8"无法申请摄像头授权"));
+            for (int waited = 0; waited < enrollmentPollMs && ! threadShouldExit(); waited += 100)
+                wait(juce::jmin(100, enrollmentPollMs - waited));
+            continue;
+        }
+
         DesiredState desired;
         int pollAfterMs = pollFallbackMs;
         if (! pollControl(desired, pollAfterMs))
         {
             stopPublisher();
-            setStatus(Status::error, lastError.isNotEmpty() ? lastError : TRANS("摄像头控制连接失败"));
+            bool enrollAgain = false;
+            {
+                const juce::ScopedLock lock(stateLock);
+                enrollAgain = pairingRejected && enrollmentKey.getSize() == 32;
+                if (enrollAgain)
+                {
+                    pairingId.clear();
+                    pairingKey.reset();
+                    sequence = 0;
+                    pairingRejected = false;
+                }
+            }
+            if (enrollAgain)
+            {
+                setStatus(Status::awaitingAuthorization);
+                continue;
+            }
+            setStatus(Status::error, lastError.isNotEmpty() ? lastError : sonobus::video::translated(u8"摄像头控制连接失败"));
             wait(juce::jlimit(500, 5000, pollAfterMs));
             continue;
         }
@@ -156,21 +232,38 @@ void VideoRelayClient::run()
         if (ffmpegPath.isEmpty())
         {
             stopPublisher();
-            setStatus(Status::error, TRANS("安装包中缺少 FFmpeg 视频运行时"));
+            setStatus(Status::error, sonobus::video::translated(u8"安装包中缺少 FFmpeg 视频运行时"));
             wait(juce::jlimit(500, 5000, pollAfterMs));
             continue;
         }
 
         const auto now = juce::Time::getMillisecondCounter();
+        const auto nowHi = juce::Time::getMillisecondCounterHiRes();
         bool selectedMissing = desired.cameraDeviceId.isNotEmpty();
         for (const auto& device : devices)
             if (device.id == desired.cameraDeviceId) selectedMissing = false;
-        if (devices.isEmpty() || selectedMissing || now - lastDeviceRefresh >= 5000)
+        const bool unavailable = devices.isEmpty() || selectedMissing;
+        if ((unavailable && nowHi >= nextDeviceRefreshMs) || (! unavailable && now - lastDeviceRefresh >= 5000))
         {
-            devices = getCameraDevices(ffmpegPath);
+            enumerationError.clear();
+            devices = getCameraDevices(ffmpegPath, enumerationError);
             lastDeviceRefresh = now;
+            bool stillMissing = desired.cameraDeviceId.isNotEmpty();
+            for (const auto& device : devices)
+                if (device.id == desired.cameraDeviceId) stillMissing = false;
+            if (devices.isEmpty() || stillMissing)
+            {
+                nextDeviceRefreshMs = nowHi + deviceRefreshDelayMs;
+                deviceRefreshDelayMs = juce::jmin(deviceRefreshDelayMs * 2, 30000);
+            }
+            else
+            {
+                nextDeviceRefreshMs = 0.0;
+                deviceRefreshDelayMs = 1000;
+            }
             const juce::ScopedLock lock(stateLock);
             cameras = devices;
+            cameraError = enumerationError;
         }
 
         if (! desired.enabled)
@@ -178,24 +271,32 @@ void VideoRelayClient::run()
             stopPublisher();
             runningDesired = desired;
             runningMode = {};
+            lastAttemptRevision.clear();
+            nextCameraAttemptMs = 0.0;
+            retryDelayMs = 1000;
             setStatus(Status::waitingForAdmin);
+        }
+        else if (desired.cameraDeviceId.isEmpty())
+        {
+            stopPublisher();
+            setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"后台尚未选择摄像头"));
         }
         else if (devices.isEmpty())
         {
             stopPublisher();
-            setStatus(Status::cameraUnavailable, TRANS("未检测到摄像头"));
+            setStatus(Status::cameraUnavailable, enumerationError.isNotEmpty() ? enumerationError
+                : sonobus::video::translated(u8"未检测到摄像头"));
         }
         else
         {
-            auto selectedCamera = desired.cameraDeviceId;
-            if (selectedCamera.isEmpty()) selectedCamera = devices.getFirst().id;
+            const auto selectedCamera = desired.cameraDeviceId;
             bool cameraAvailable = false;
             for (const auto& device : devices)
                 if (device.id == selectedCamera) cameraAvailable = true;
             if (! cameraAvailable)
             {
                 stopPublisher();
-                setStatus(Status::cameraUnavailable, TRANS("管理员选择的摄像头当前不可用"));
+                setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"管理员选择的摄像头当前不可用"));
             }
             else
             {
@@ -204,6 +305,13 @@ void VideoRelayClient::run()
                                          || desired.publishNonce != runningDesired.publishNonce
                                          || desired.publishUser != runningDesired.publishUser
                                          || desired.rtspPort != runningDesired.rtspPort;
+                const bool attemptChanged = desired.revision != lastAttemptRevision;
+                if (attemptChanged)
+                {
+                    nextCameraAttemptMs = 0.0;
+                    retryDelayMs = 1000;
+                }
+                const auto nowMs = juce::Time::getMillisecondCounterHiRes();
                 bool hasPublisher = false;
                 bool publisherRunning = false;
                 {
@@ -215,19 +323,25 @@ void VideoRelayClient::run()
                 {
                     readPublisherProgress();
                     stopPublisher();
-                    setStatus(Status::error, lastError.isNotEmpty() ? lastError : TRANS("H.264 编码进程已退出"));
+                    setStatus(Status::error, lastError.isNotEmpty() ? lastError : sonobus::video::translated(u8"H.264 编码进程已退出"));
                     hasPublisher = false;
+                    nextCameraAttemptMs = nowMs + retryDelayMs;
+                    retryDelayMs = juce::jmin(retryDelayMs * 2, 30000);
                 }
-                if (! hasPublisher || desiredChanged)
+                if ((! hasPublisher || desiredChanged) && nowMs >= nextCameraAttemptMs)
                 {
                     stopPublisher();
+                    lastAttemptRevision = desired.revision;
                     setStatus(Status::startingCamera);
                     auto mode = selectedCamera == runningDesired.cameraDeviceId && runningMode.isValid()
                                   ? runningMode
                                   : findHighest60FpsMode(ffmpegPath, selectedCamera);
                     if (! mode.isValid())
                     {
-                        setStatus(Status::cameraUnavailable, TRANS("摄像头没有可用的 60 FPS 模式"));
+                        setStatus(Status::cameraUnavailable, lastError.isNotEmpty() ? lastError
+                            : sonobus::video::translated(u8"摄像头没有可用的 60 FPS 模式"));
+                        nextCameraAttemptMs = nowMs + retryDelayMs;
+                        retryDelayMs = juce::jmin(retryDelayMs * 2, 30000);
                     }
                     else
                     {
@@ -237,15 +351,25 @@ void VideoRelayClient::run()
                         {
                             runningDesired = launchDesired;
                             runningMode = mode;
+                            nextCameraAttemptMs = 0.0;
+#if ! JUCE_WINDOWS
                             setStatus(Status::online);
+#endif
                         }
                         else
                         {
-                            setStatus(Status::error, lastError.isNotEmpty() ? lastError : TRANS("无法启动 H.264 硬件编码"));
+                            setStatus(Status::cameraUnavailable, lastError.isNotEmpty() ? lastError
+                                : sonobus::video::translated(u8"无法启动 H.264 硬件编码"));
+                            nextCameraAttemptMs = nowMs + retryDelayMs;
+                            retryDelayMs = juce::jmin(retryDelayMs * 2, 30000);
                         }
                     }
                 }
                 readPublisherProgress();
+                {
+                    const juce::ScopedLock lock(stateLock);
+                    if (actualFps >= 59.0) retryDelayMs = 1000;
+                }
             }
         }
 
@@ -259,6 +383,102 @@ void VideoRelayClient::run()
     stopPublisher();
 #endif
 }
+
+bool VideoRelayClient::requestEnrollment(int& pollAfterMs)
+{
+    juce::String localHost, localGroup, localUser, localClientId;
+    juce::MemoryBlock localKey;
+    EnrollmentHandler handler;
+    {
+        const juce::ScopedLock lock(stateLock);
+        localHost = host;
+        localGroup = group;
+        localUser = user;
+        localClientId = clientId;
+        localKey = enrollmentKey;
+        handler = enrollmentHandler;
+    }
+    if (localKey.getSize() != 32) return false;
+
+    juce::MemoryBlock nonceBytes(18, true);
+    auto& random = juce::Random::getSystemRandom();
+    for (size_t i = 0; i < nonceBytes.getSize(); ++i)
+        static_cast<juce::uint8*>(nonceBytes.getData())[i] = static_cast<juce::uint8>(random.nextInt(256));
+    const auto nonce = toBase64Url(nonceBytes.getData(), nonceBytes.getSize());
+    const auto timestamp = juce::Time::currentTimeMillis();
+    const auto signatureInput = "enroll\n" + localGroup + "\n" + localUser + "\n" + localClientId + "\n"
+                              + juce::String(timestamp) + "\n" + nonce;
+
+    auto request = std::make_unique<juce::DynamicObject>();
+    request->setProperty("group", localGroup);
+    request->setProperty("user", localUser);
+    request->setProperty("clientId", localClientId);
+    request->setProperty("timestamp", static_cast<juce::int64>(timestamp));
+    request->setProperty("nonce", nonce);
+    request->setProperty("signature", hmacSha256Base64Url(localKey, signatureInput));
+    const auto body = juce::JSON::toString(juce::var(request.release()), true);
+
+    int statusCode = 0;
+    juce::StringPairArray responseHeaders;
+    auto endpoint = juce::URL("http://" + formatHost(localHost) + ":" + juce::String(controlPort) + "/video/control/enroll").withPOSTData(body);
+    auto stream = endpoint.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+                                                 .withConnectionTimeoutMs(5000)
+                                                 .withExtraHeaders("Content-Type: application/json\r\n")
+                                                 .withResponseHeaders(&responseHeaders)
+                                                 .withStatusCode(&statusCode)
+                                                 .withNumRedirectsToFollow(0));
+    if (stream == nullptr || statusCode != 200)
+    {
+        const juce::ScopedLock lock(stateLock);
+        lastError = statusCode > 0 ? sonobus::video::translated(u8"自动授权请求被拒绝，HTTP ") + juce::String(statusCode)
+                                   : sonobus::video::translated(u8"无法连接摄像头授权服务");
+        return false;
+    }
+
+    const auto response = juce::JSON::parse(stream->readEntireStreamAsString());
+    auto* object = response.getDynamicObject();
+    if (object == nullptr) return false;
+    const auto payload = object->getProperty("payload").toString();
+    const auto signature = object->getProperty("signature").toString();
+    if (! secureEquals(signature, hmacSha256Base64Url(localKey, "enrollment-response\n" + nonce + "\n" + payload)))
+    {
+        const juce::ScopedLock lock(stateLock);
+        lastError = sonobus::video::translated(u8"摄像头授权响应签名无效");
+        return false;
+    }
+    pollAfterMs = juce::jlimit(250, 5000, static_cast<int>(object->getProperty("pollAfterMs")));
+
+    juce::MemoryBlock decoded;
+    if (! fromBase64Url(payload, decoded)) return false;
+    const auto parsed = juce::JSON::parse(juce::String::fromUTF8(static_cast<const char*>(decoded.getData()), static_cast<int>(decoded.getSize())));
+    auto* enrollment = parsed.getDynamicObject();
+    if (enrollment == nullptr || enrollment->getProperty("type").toString() != "enrollment") return false;
+    if (enrollment->getProperty("state").toString() != "approved")
+    {
+        setStatus(Status::awaitingAuthorization);
+        return true;
+    }
+
+    const auto approvedPairingId = enrollment->getProperty("pairingId").toString().trim();
+    juce::String saveError;
+    if (approvedPairingId.isEmpty() || !handler || !handler(approvedPairingId, localKey, saveError))
+    {
+        setStatus(Status::error, saveError.isNotEmpty() ? saveError
+            : sonobus::video::translated(u8"无法保存摄像头授权"));
+        return false;
+    }
+    {
+        const juce::ScopedLock lock(stateLock);
+        pairingId = approvedPairingId;
+        pairingKey = localKey;
+        sequence = 0;
+        pairingRejected = false;
+        lastError.clear();
+    }
+    setStatus(Status::connecting);
+    return true;
+}
+
 
 bool VideoRelayClient::pollControl(DesiredState& desired, int& pollAfterMs)
 {
@@ -309,8 +529,9 @@ bool VideoRelayClient::pollControl(DesiredState& desired, int& pollAfterMs)
     if (stream == nullptr || statusCode != 200)
     {
         const juce::ScopedLock lock(stateLock);
-        lastError = statusCode > 0 ? TRANS("控制服务器拒绝请求，HTTP ") + juce::String(statusCode)
-                                   : TRANS("无法连接摄像头控制服务器");
+        lastError = statusCode > 0 ? sonobus::video::translated(u8"控制服务器拒绝请求，HTTP ") + juce::String(statusCode)
+                                   : sonobus::video::translated(u8"无法连接摄像头控制服务器");
+        pairingRejected = statusCode == 403;
         return false;
     }
 
@@ -325,7 +546,7 @@ bool VideoRelayClient::pollControl(DesiredState& desired, int& pollAfterMs)
     if (! secureEquals(responseSignature, expected))
     {
         const juce::ScopedLock lock(stateLock);
-        lastError = TRANS("控制服务器响应签名无效");
+        lastError = sonobus::video::translated(u8"控制服务器响应签名无效");
         return false;
     }
 
@@ -342,7 +563,7 @@ bool VideoRelayClient::pollControl(DesiredState& desired, int& pollAfterMs)
     if (desiredObject->getProperty("room").toString() != expectedRoom)
     {
         const juce::ScopedLock lock(stateLock);
-        lastError = TRANS("配对群组与当前 SonoBus 群组不一致");
+        lastError = sonobus::video::translated(u8"配对群组与当前 SonoBus 群组不一致");
         return false;
     }
 
@@ -357,6 +578,7 @@ bool VideoRelayClient::pollControl(DesiredState& desired, int& pollAfterMs)
     {
         const juce::ScopedLock lock(stateLock);
         lastError.clear();
+        pairingRejected = false;
     }
     return desired.ingestPath.isNotEmpty() && desired.publishUser.isNotEmpty() && desired.publishNonce.isNotEmpty();
 }
@@ -375,7 +597,7 @@ juce::var VideoRelayClient::makeStatusPayload() const
         cameraList.add(juce::var(item.release()));
     }
     result->setProperty("cameras", cameraList);
-    result->setProperty("capturing", publisher != nullptr && publisher->isRunning());
+    result->setProperty("capturing", getStatus() == Status::online && publisher != nullptr && publisher->isRunning());
     result->setProperty("cameraDeviceId", activeCameraId);
     result->setProperty("cameraName", activeCamera);
     result->setProperty("codec", activeEncoder);
@@ -387,40 +609,58 @@ juce::var VideoRelayClient::makeStatusPayload() const
     if (actualFps > 0.0) result->setProperty("fps", actualFps);
     if (actualBitrate > 0) result->setProperty("bitrate", actualBitrate);
     if (lastError.isNotEmpty()) result->setProperty("error", lastError);
+    else if (cameraError.isNotEmpty()) result->setProperty("error", cameraError);
     return juce::var(result.release());
 }
 
-juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(const juce::String& ffmpegPath) const
+juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(const juce::String& ffmpegPath,
+                                                                                juce::String& error) const
 {
     juce::Array<CameraDevice> result;
-#if JUCE_MAC
-    const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", "" };
-#elif JUCE_WINDOWS
-    const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy" };
-#else
-    juce::ignoreUnused(ffmpegPath);
-    return result;
-#endif
-#if JUCE_MAC || JUCE_WINDOWS
-    juce::ChildProcess probe;
-    if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) return result;
-    if (! probe.waitForProcessToFinish(5000)) probe.kill();
-    const auto lines = juce::StringArray::fromLines(probe.readAllProcessOutput());
-    bool inVideoSection = false;
 #if JUCE_WINDOWS
-    juce::String pendingName;
-    const auto quotedValue = [](const juce::String& line)
+    juce::ignoreUnused(ffmpegPath);
+    const auto helper = findWindowsCaptureHelper();
+    if (helper.isEmpty())
     {
-        const auto first = line.indexOfChar('"');
-        if (first < 0) return juce::String();
-        const auto rest = line.substring(first + 1);
-        const auto second = rest.indexOfChar('"');
-        return second < 0 ? juce::String() : rest.substring(0, second);
-    };
-#endif
-    for (const auto& line : lines)
+        error = sonobus::video::translated(u8"安装包中缺少 Windows 共享摄像头运行时");
+        return result;
+    }
+    juce::ChildProcess probe;
+    if (! probe.start({ helper, "--list" }, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
     {
-#if JUCE_MAC
+        error = sonobus::video::translated(u8"无法启动 Windows 共享摄像头枚举");
+        return result;
+    }
+    if (! probe.waitForProcessToFinish(10000))
+    {
+        probe.kill();
+        error = sonobus::video::translated(u8"Windows 共享摄像头枚举超时");
+    }
+    const auto output = probe.readAllProcessOutput();
+    for (const auto& device : sonobus::video::parseWindowsCameraDevices(output))
+        result.add({ device.id, device.name });
+    if (result.isEmpty() && error.isEmpty())
+    {
+        const auto failure = cameraFailureMessage(output);
+        error = failure.isNotEmpty() ? failure : sonobus::video::translated(u8"未检测到摄像头");
+    }
+#elif JUCE_MAC
+    const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", "" };
+    juce::ChildProcess probe;
+    if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    {
+        error = sonobus::video::translated(u8"无法启动摄像头枚举程序");
+        return result;
+    }
+    if (! probe.waitForProcessToFinish(5000))
+    {
+        probe.kill();
+        error = sonobus::video::translated(u8"摄像头枚举超时");
+    }
+    const auto output = probe.readAllProcessOutput();
+    bool inVideoSection = false;
+    for (const auto& line : juce::StringArray::fromLines(output))
+    {
         if (line.contains("AVFoundation video devices:")) { inVideoSection = true; continue; }
         if (line.contains("AVFoundation audio devices:")) { inVideoSection = false; continue; }
         if (! inVideoSection) continue;
@@ -431,113 +671,145 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
         const auto name = close >= 0 ? rest.substring(close + 1).trim() : juce::String();
         if (id.containsOnly("0123456789") && name.isNotEmpty() && ! name.startsWithIgnoreCase("Capture screen"))
             result.add({ id, name });
-#elif JUCE_WINDOWS
-        if (line.contains("DirectShow video devices")) { inVideoSection = true; continue; }
-        if (line.contains("DirectShow audio devices"))
-        {
-            if (pendingName.isNotEmpty()) result.add({ pendingName, pendingName });
-            pendingName.clear();
-            inVideoSection = false;
-            continue;
-        }
-        if (! inVideoSection) continue;
-        if (line.containsIgnoreCase("Alternative name") && pendingName.isNotEmpty())
-        {
-            const auto id = quotedValue(line);
-            result.add({ id.isNotEmpty() ? id : pendingName, pendingName });
-            pendingName.clear();
-        }
-        else if (line.contains("(video)") && line.containsChar('"'))
-        {
-            if (pendingName.isNotEmpty()) result.add({ pendingName, pendingName });
-            pendingName = quotedValue(line);
-        }
-#endif
     }
-#if JUCE_WINDOWS
-    if (pendingName.isNotEmpty()) result.add({ pendingName, pendingName });
-#endif
+    if (result.isEmpty() && error.isEmpty()) error = sonobus::video::translated(u8"未检测到摄像头");
+#else
+    juce::ignoreUnused(ffmpegPath, error);
 #endif
     return result;
 }
 
 juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::get60FpsCameraModes(const juce::String& ffmpegPath,
-                                                                                 const juce::String& cameraDeviceId) const
+                                                                                 const juce::String& cameraDeviceId,
+                                                                                 juce::String& error) const
 {
     juce::Array<CameraMode> result;
-#if JUCE_MAC
+#if JUCE_WINDOWS
+    juce::ignoreUnused(ffmpegPath);
+    const auto helper = findWindowsCaptureHelper();
+    juce::ChildProcess probe;
+    if (helper.isEmpty() || ! probe.start({ helper, "--modes", "--device", cameraDeviceId },
+                                           juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    {
+        error = sonobus::video::translated(u8"无法读取 Windows 共享摄像头模式");
+        return result;
+    }
+    if (! probe.waitForProcessToFinish(15000))
+    {
+        probe.kill();
+        error = sonobus::video::translated(u8"读取 Windows 共享摄像头模式超时");
+    }
+    const auto outputText = probe.readAllProcessOutput();
+    for (const auto& mode : sonobus::video::parseWindowsCameraModes(outputText))
+        result.addIfNotAlreadyThere({ mode.width, mode.height });
+    if (result.isEmpty() && error.isEmpty())
+    {
+        const auto failure = cameraFailureMessage(outputText);
+        error = failure.isNotEmpty() ? failure : sonobus::video::translated(u8"摄像头没有可共享的真实 60 FPS 模式");
+    }
+#elif JUCE_MAC
     const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-loglevel", "info", "-f", "avfoundation",
                                          "-framerate", juce::String(targetFps), "-video_size", "1x1",
                                          "-i", cameraDeviceId + ":none", "-frames:v", "1", "-f", "null", "-" };
     const std::regex modePattern(R"((\d+)x(\d+)@\[\s*([0-9.]+)\s+([0-9.]+)\]fps)");
-    constexpr int fpsCapture = 4;
-#elif JUCE_WINDOWS
-    const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-loglevel", "info", "-list_options", "true",
-                                         "-f", "dshow", "-i", "video=" + cameraDeviceId };
-    const std::regex modePattern(R"(s=(\d+)x(\d+)\s+fps=([0-9.]+))");
-    constexpr int fpsCapture = 3;
-#else
-    juce::ignoreUnused(ffmpegPath, cameraDeviceId);
-    return result;
-#endif
-#if JUCE_MAC || JUCE_WINDOWS
     juce::ChildProcess probe;
-    if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) return result;
-    if (! probe.waitForProcessToFinish(5000)) probe.kill();
-    const auto output = probe.readAllProcessOutput().toStdString();
+    if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    {
+        error = sonobus::video::translated(u8"无法读取摄像头模式");
+        return result;
+    }
+    if (! probe.waitForProcessToFinish(5000))
+    {
+        probe.kill();
+        error = sonobus::video::translated(u8"读取摄像头模式超时");
+    }
+    const auto outputText = probe.readAllProcessOutput();
+    const auto output = outputText.toStdString();
     for (auto match = std::sregex_iterator(output.begin(), output.end(), modePattern); match != std::sregex_iterator(); ++match)
     {
-        if (std::stod((*match)[fpsCapture].str()) < 59.0) continue;
-        const CameraMode mode { std::stoi((*match)[1].str()), std::stoi((*match)[2].str()) };
-        bool duplicate = false;
-        for (const auto existing : result) if (existing == mode) duplicate = true;
-        if (! duplicate) result.add(mode);
+        if (std::stod((*match)[4].str()) < 59.0) continue;
+        result.addIfNotAlreadyThere({ std::stoi((*match)[1].str()), std::stoi((*match)[2].str()) });
     }
+    if (result.isEmpty() && error.isEmpty())
+        error = sonobus::video::translated(u8"摄像头没有真实的 60 FPS 模式");
+#else
+    juce::ignoreUnused(ffmpegPath, cameraDeviceId, error);
+#endif
     std::sort(result.begin(), result.end(), [](const CameraMode& left, const CameraMode& right)
     {
         const auto leftPixels = static_cast<juce::int64>(left.width) * left.height;
         const auto rightPixels = static_cast<juce::int64>(right.width) * right.height;
         return leftPixels == rightPixels ? left.width > right.width : leftPixels > rightPixels;
     });
-#endif
     return result;
 }
 
 VideoRelayClient::CameraMode VideoRelayClient::findHighest60FpsMode(const juce::String& ffmpegPath,
                                                                     const juce::String& cameraDeviceId)
 {
-    for (const auto mode : get60FpsCameraModes(ffmpegPath, cameraDeviceId))
+    juce::String modeError;
+    const auto modes = get60FpsCameraModes(ffmpegPath, cameraDeviceId, modeError);
+    for (const auto mode : modes)
     {
         if (threadShouldExit()) break;
-        if (probeCameraMode(ffmpegPath, cameraDeviceId, mode)) return mode;
+        juce::String probeError;
+        if (probeCameraMode(ffmpegPath, cameraDeviceId, mode, probeError)) return mode;
+        if (modeError.isEmpty()) modeError = probeError;
+        if (sonobus::video::classifyCameraFailure(probeError) == sonobus::video::CameraFailure::busy) break;
+    }
+    if (modeError.isNotEmpty())
+    {
+        const juce::ScopedLock lock(stateLock);
+        lastError = modeError;
     }
     return {};
 }
 
 bool VideoRelayClient::probeCameraMode(const juce::String& ffmpegPath,
                                        const juce::String& cameraDeviceId,
-                                       CameraMode mode) const
+                                       CameraMode mode,
+                                       juce::String& error) const
 {
+#if JUCE_WINDOWS
+    juce::ignoreUnused(ffmpegPath, cameraDeviceId, error);
+    return mode.isValid();
+#else
     auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "error" };
     arguments.addArray(captureArguments(cameraDeviceId, mode));
     arguments.addArray({ "-frames:v", "30", "-an", "-f", "null", "-" });
     juce::ChildProcess probe;
-    if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) return false;
+    if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    {
+        error = sonobus::video::translated(u8"无法启动摄像头探测");
+        return false;
+    }
     if (! probe.waitForProcessToFinish(4000))
     {
         probe.kill();
+        error = sonobus::video::translated(u8"摄像头响应超时");
         return false;
     }
-    return ! threadShouldExit() && probe.getExitCode() == 0;
+    const auto output = probe.readAllProcessOutput();
+    if (! threadShouldExit() && probe.getExitCode() == 0) return true;
+    error = cameraFailureMessage(output);
+    if (error.isEmpty()) error = sonobus::video::translated(u8"摄像头模式探测失败");
+    return false;
+#endif
 }
 
 bool VideoRelayClient::probeEncoder(const juce::String& ffmpegPath,
                                     const juce::String& cameraDeviceId,
                                     CameraMode mode,
-                                    const juce::String& encoder) const
+                                    const juce::String& encoder,
+                                    juce::String& error) const
 {
     auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "error" };
+#if JUCE_WINDOWS
+    juce::ignoreUnused(cameraDeviceId);
+    arguments.addArray({ "-f", "lavfi", "-i", "color=c=black:s=" + juce::String(mode.width) + "x" + juce::String(mode.height) + ":r=60" });
+#else
     arguments.addArray(captureArguments(cameraDeviceId, mode));
+#endif
     arguments.addArray({ "-frames:v", "30", "-an", "-r", juce::String(targetFps), "-fps_mode", "cfr", "-c:v", encoder });
     arguments.addArray(encoderArguments(encoder));
     arguments.addArray({ "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-bf", "0", "-g", "30", "-f", "null", "-" });
@@ -546,9 +818,13 @@ bool VideoRelayClient::probeEncoder(const juce::String& ffmpegPath,
     if (! probe.waitForProcessToFinish(5000))
     {
         probe.kill();
+        error = sonobus::video::translated(u8"H.264 编码器探测超时");
         return false;
     }
-    return ! threadShouldExit() && probe.getExitCode() == 0;
+    const auto output = probe.readAllProcessOutput();
+    if (! threadShouldExit() && probe.getExitCode() == 0) return true;
+    error = cameraFailureMessage(output);
+    return false;
 }
 
 bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
@@ -568,13 +844,19 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     for (const auto& encoder : preferred)
     {
         if (threadShouldExit()) break;
-        if (! encoders.contains(encoder) || ! probeEncoder(ffmpegPath, desired.cameraDeviceId, mode, encoder)) continue;
+        if (! encoders.contains(encoder)) continue;
+        juce::String probeError;
+        if (! probeEncoder(ffmpegPath, desired.cameraDeviceId, mode, encoder, probeError))
+        {
+            if (launchErrors.isEmpty()) launchErrors = probeError;
+            continue;
+        }
         auto process = std::make_unique<juce::ChildProcess>();
         const auto arguments = publisherArguments(ffmpegPath, desired.cameraDeviceId, mode, encoder, desired);
         if (! process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) continue;
         if (process->waitForProcessToFinish(1500))
         {
-            launchErrors = tail(process->readAllProcessOutput());
+            launchErrors = cameraFailureMessage(process->readAllProcessOutput());
             continue;
         }
         if (threadShouldExit())
@@ -600,7 +882,8 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     }
     {
         const juce::ScopedLock lock(stateLock);
-        lastError = launchErrors.isNotEmpty() ? launchErrors : TRANS("没有可用的 H.264 编码器或编码硬件");
+        lastError = launchErrors.isNotEmpty() ? launchErrors
+            : sonobus::video::translated(u8"没有可用的 H.264 编码器或编码硬件");
     }
     return false;
 }
@@ -640,13 +923,26 @@ void VideoRelayClient::readPublisherProgress()
         if (newline < 0) break;
         const auto line = progressBuffer.substring(0, newline).trim();
         progressBuffer = progressBuffer.substring(newline + 1);
-        if (line.startsWith("fps=")) actualFps = line.fromFirstOccurrenceOf("=", false, false).getDoubleValue();
+        if (line.startsWith("capture_fps="))
+        {
+            actualFps = line.fromFirstOccurrenceOf("=", false, false).getDoubleValue();
+            if (actualFps >= 59.0) status.store(Status::online);
+        }
+#if ! JUCE_WINDOWS
+        else if (line.startsWith("fps="))
+        {
+            actualFps = line.fromFirstOccurrenceOf("=", false, false).getDoubleValue();
+        }
+#endif
+        if (line.startsWith("capture_width=")) activeMode.width = line.fromFirstOccurrenceOf("=", false, false).getIntValue();
+        if (line.startsWith("capture_height=")) activeMode.height = line.fromFirstOccurrenceOf("=", false, false).getIntValue();
         if (line.startsWith("bitrate="))
         {
             const auto value = line.fromFirstOccurrenceOf("=", false, false).retainCharacters("0123456789.");
             if (value.isNotEmpty()) actualBitrate = juce::roundToInt(value.getDoubleValue() * 1000.0);
         }
-        if (! line.containsChar('=') && line.isNotEmpty()) lastError = line.substring(0, 500);
+        if (line.startsWith("SONOBUS_ERROR=")) lastError = cameraFailureMessage(line);
+        else if (! line.containsChar('=') && line.isNotEmpty()) lastError = line.substring(0, 500);
     }
 }
 
@@ -675,6 +971,17 @@ juce::String VideoRelayClient::findFfmpeg() const
     return {};
 }
 
+juce::String VideoRelayClient::findWindowsCaptureHelper() const
+{
+#if JUCE_WINDOWS
+    const auto overridePath = juce::SystemStats::getEnvironmentVariable("SONOBUS_VIDEO_CAPTURE_HELPER_PATH", {});
+    if (overridePath.isNotEmpty() && juce::File(overridePath).existsAsFile()) return overridePath;
+    const auto sibling = moduleFile().getSiblingFile("SonoBusVideoCaptureHelper.exe");
+    if (sibling.existsAsFile()) return sibling.getFullPathName();
+#endif
+    return {};
+}
+
 juce::StringArray VideoRelayClient::availableEncoders(const juce::String& ffmpegPath) const
 {
     juce::ChildProcess probe;
@@ -699,9 +1006,8 @@ juce::StringArray VideoRelayClient::captureArguments(const juce::String& cameraD
              "-video_size", juce::String(mode.width) + "x" + juce::String(mode.height),
              "-use_wallclock_as_timestamps", "1", "-i", cameraDeviceId + ":none" };
 #elif JUCE_WINDOWS
-    return { "-f", "dshow", "-rtbufsize", "256M", "-framerate", juce::String(targetFps),
-             "-video_size", juce::String(mode.width) + "x" + juce::String(mode.height),
-             "-use_wallclock_as_timestamps", "1", "-i", "video=" + cameraDeviceId };
+    juce::ignoreUnused(cameraDeviceId, mode);
+    return {};
 #else
     juce::ignoreUnused(cameraDeviceId, mode);
     return {};
@@ -724,8 +1030,14 @@ juce::StringArray VideoRelayClient::publisherArguments(const juce::String& ffmpe
                                                         const juce::String& encoder,
                                                         const DesiredState& desired) const
 {
+#if JUCE_WINDOWS
+    auto arguments = juce::StringArray { findWindowsCaptureHelper(), "--publish", "--device", cameraDeviceId,
+                                         "--width", juce::String(mode.width), "--height", juce::String(mode.height),
+                                         "--ffmpeg", ffmpegPath, "--" };
+#else
     auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin" };
     arguments.addArray(captureArguments(cameraDeviceId, mode));
+#endif
     arguments.addArray({ "-an", "-r", juce::String(targetFps), "-fps_mode", "cfr", "-c:v", encoder });
     arguments.addArray(encoderArguments(encoder));
 
@@ -756,32 +1068,35 @@ void VideoRelayClient::setStatus(Status newStatus, const juce::String& error)
     const juce::ScopedLock lock(stateLock);
     status.store(newStatus);
     if (error.isNotEmpty()) lastError = error;
-    else if (newStatus == Status::online || newStatus == Status::waitingForAdmin || newStatus == Status::connecting)
+    else if (newStatus == Status::online || newStatus == Status::waitingForAdmin
+             || newStatus == Status::awaitingAuthorization || newStatus == Status::connecting)
         lastError.clear();
 }
 
 juce::String VideoRelayClient::getStatusText() const
 {
     const juce::ScopedLock lock(stateLock);
+    const auto separator = sonobus::video::utf8(u8" · ");
     switch (getStatus())
     {
-        case Status::unpaired:          return TRANS("未配对") + (lastError.isNotEmpty() ? " · " + lastError : "");
-        case Status::connecting:        return TRANS("连接管理员控制服务中");
-        case Status::waitingForAdmin:   return TRANS("已连接，等待管理员开启摄像头");
-        case Status::startingCamera:    return TRANS("检测最高 60 FPS 模式并启动 H.264 编码");
+        case Status::unpaired:          return sonobus::video::translated(u8"等待管理员授权") + (lastError.isNotEmpty() ? separator + lastError : "");
+        case Status::awaitingAuthorization: return sonobus::video::translated(u8"等待后台管理员授权；无需输入授权码");
+        case Status::connecting:        return sonobus::video::translated(u8"连接管理员控制服务中");
+        case Status::waitingForAdmin:   return sonobus::video::translated(u8"已连接，等待管理员开启摄像头");
+        case Status::startingCamera:    return sonobus::video::translated(u8"检测真实 60 FPS 模式并启动 H.264 编码");
         case Status::online:
         {
-            auto text = TRANS("H.264 视频在线");
-            if (activeMode.isValid()) text += " · " + juce::String(activeMode.width) + "×" + juce::String(activeMode.height);
-            if (actualFps > 0.0) text += " · " + juce::String(actualFps, 1) + " FPS";
-            if (actualBitrate > 0) text += " · " + juce::String(actualBitrate / 1000000.0, 1) + " Mbps";
+            auto text = sonobus::video::translated(u8"H.264 视频在线");
+            if (activeMode.isValid()) text += separator + juce::String(activeMode.width) + sonobus::video::utf8(u8"×") + juce::String(activeMode.height);
+            if (actualFps > 0.0) text += separator + juce::String(actualFps, 1) + " FPS";
+            if (actualBitrate > 0) text += separator + juce::String(actualBitrate / 1000000.0, 1) + " Mbps";
             return text;
         }
-        case Status::cameraUnavailable: return TRANS("摄像头不可用") + (lastError.isNotEmpty() ? " · " + lastError : "");
-        case Status::error:             return TRANS("视频错误") + (lastError.isNotEmpty() ? " · " + lastError : "");
+        case Status::cameraUnavailable: return sonobus::video::translated(u8"摄像头不可用") + (lastError.isNotEmpty() ? separator + lastError : "");
+        case Status::error:             return sonobus::video::translated(u8"视频错误") + (lastError.isNotEmpty() ? separator + lastError : "");
         case Status::idle:              break;
     }
-    return TRANS("未连接");
+    return sonobus::video::translated(u8"未连接");
 }
 
 juce::String VideoRelayClient::getActiveCamera() const
@@ -790,18 +1105,28 @@ juce::String VideoRelayClient::getActiveCamera() const
     return activeCamera;
 }
 
-bool VideoRelayClient::parsePairingText(const juce::String& text,
-                                        juce::String& pairingIdOut,
-                                        juce::MemoryBlock& pairingKeyOut)
+
+juce::MemoryBlock VideoRelayClient::deriveEnrollmentKey(const juce::MemoryBlock& secret,
+                                                        const juce::String& group,
+                                                        const juce::String& user,
+                                                        const juce::String& clientId)
 {
-    const auto parts = juce::StringArray::fromTokens(text.trim(), ".", "");
-    if (parts.size() != 3 || parts[0] != "SBPAIR1" || parts[1].isEmpty()) return false;
-    juce::MemoryBlock key;
-    if (! fromBase64Url(parts[2], key) || key.getSize() != 32) return false;
-    pairingIdOut = parts[1];
-    pairingKeyOut = key;
-    return true;
+    juce::MemoryOutputStream material;
+    static constexpr char prefix[] = "sonobus-video-enrollment-v1\0";
+    material.write(prefix, sizeof(prefix) - 1);
+    material.write(secret.getData(), secret.getSize());
+    material.writeByte(0);
+    const auto groupUtf8 = group.toUTF8();
+    material.write(groupUtf8.getAddress(), group.getNumBytesAsUTF8());
+    material.writeByte(0);
+    const auto userUtf8 = user.toUTF8();
+    material.write(userUtf8.getAddress(), user.getNumBytesAsUTF8());
+    material.writeByte(0);
+    const auto clientUtf8 = clientId.toUTF8();
+    material.write(clientUtf8.getAddress(), clientId.getNumBytesAsUTF8());
+    return juce::SHA256(material.getMemoryBlock()).getRawData();
 }
+
 
 juce::String VideoRelayClient::hmacSha256Base64Url(const juce::MemoryBlock& key, const juce::String& value)
 {

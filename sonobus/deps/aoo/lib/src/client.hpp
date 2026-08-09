@@ -137,6 +137,8 @@ public:
 
     int32_t handle_events(aoo_eventhandler fn, void *user) override;
 
+    int32_t get_video_enrollment_secret(char *buffer, int32_t size) const override;
+
     void do_connect(const std::string& host, int port);
 
     int try_connect(const std::string& host, int port);
@@ -188,6 +190,7 @@ private:
     double last_udp_ping_time_ = 0;
     double first_udp_ping_time_ = 0;
     int64_t token_ = 0;
+    std::string video_enrollment_secret_;
     
     // commands
     lockfree::queue<std::unique_ptr<icommand>> commands_;
