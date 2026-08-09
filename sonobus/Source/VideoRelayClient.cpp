@@ -10,9 +10,9 @@ constexpr int videoPort = 19090;
 constexpr int videoMediaPort = 19091;
 constexpr size_t mediaChunkPayloadBytes = 1200;
 constexpr size_t mediaHeaderBytes = 14;
-constexpr int frameWidth = 640;
-constexpr int frameHeight = 360;
-constexpr int frameIntervalMs = 66;
+constexpr int frameWidth = 1280;
+constexpr int frameHeight = 720;
+constexpr int frameIntervalMs = 1000 / 60;
 
 juce::String makeRoomName(const juce::String& group)
 {
@@ -120,7 +120,7 @@ void VideoRelayClient::run()
                                                      frameHeight,
                                                      frameWidth,
                                                      frameHeight,
-                                                     false));
+                                                     true));
         if (camera == nullptr)
         {
             setStatus(Status::cameraUnavailable);
@@ -376,7 +376,7 @@ juce::MemoryBlock VideoRelayClient::encodeJpeg(const juce::Image& image)
 {
     juce::MemoryOutputStream output;
     juce::JPEGImageFormat format;
-    format.setQuality(0.7f);
+    format.setQuality(0.8f);
     if (! format.writeImageToStream(image, output))
         return {};
 
