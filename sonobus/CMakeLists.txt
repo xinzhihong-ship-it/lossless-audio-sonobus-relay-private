@@ -40,6 +40,10 @@ endif()
 
 project(SonoBus VERSION 1.7.2)
 
+if (MSVC)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/utf-8>")
+endif()
+
 set(BUILDVERSION 80)
 
 

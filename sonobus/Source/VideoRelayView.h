@@ -114,6 +114,18 @@ public:
     {
         const auto group = processor.getCurrentJoinedGroup();
         const auto paired = processor.hasVideoPairing();
+        if (!paired && !group.isEmpty() && isShowing() && pairingEditor.getText().isEmpty())
+        {
+            const auto clipboardText = juce::SystemClipboard::getTextFromClipboard().trim();
+            String clipboardPairingId;
+            MemoryBlock clipboardKey;
+            if (VideoRelayClient::parsePairingText(clipboardText, clipboardPairingId, clipboardKey))
+            {
+                pairingEditor.setText(clipboardText, dontSendNotification);
+                localMessage = TRANS("已从剪贴板自动填入配对信息，请点击保存配对。");
+            }
+        }
+
         auto statusText = TRANS("状态: ") + processor.getVideoStatusText();
         const auto camera = processor.getVideoCameraName();
         if (camera.isNotEmpty()) statusText += " · " + camera;
