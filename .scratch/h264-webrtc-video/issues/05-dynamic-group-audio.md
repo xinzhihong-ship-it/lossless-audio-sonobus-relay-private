@@ -1,7 +1,7 @@
 # Add dynamic SonoBus group mixing
 
 Type: task
-Status: open
+Status: claimed
 Blocked by: 01
 
 Replace the single fixed-group web bridge with on-demand headless group subscriptions. Mix each live group to 48 kHz stereo PCM, feed the MediaMTX muxer, encode Opus at 160 kbps, and publish one stable H.264 + Opus path per group without changing the native SonoBus audio relay.
@@ -14,3 +14,8 @@ Replace the single fixed-group web bridge with on-demand headless group subscrip
 - OBS and browser play synchronized group audio.
 
 ## Comments
+
+### 2026-08-09 resolution
+- `GroupMediaManager` creates one headless bridge and muxer per active group, emits 48 kHz stereo PCM, and publishes Opus 160 kbps beside copied H.264.
+- Lifecycle and stale-worker tests pass; local FFprobe confirmed H.264 Baseline plus Opus stereo on the stable public path.
+- Pending resolution evidence: simultaneous browser/OBS playback with confirmed synchronization and no audio feedback.

@@ -1,7 +1,7 @@
 # Package and run acceptance tests
 
 Type: task
-Status: open
+Status: claimed
 Blocked by: 01, 03
 
 Package the helper/runtime in Windows and macOS installers, build all CI artifacts, deploy the server, and run quality/latency/concurrency/OBS acceptance tests.
@@ -22,5 +22,8 @@ Package the helper/runtime in Windows and macOS installers, build all CI artifac
 - Five simultaneous Chromium WebRTC sessions remained registered as five MediaMTX readers on the same public path.
 - A 720p60 frame-embedded timestamp test measured 100/100 warm samples below 500 ms: median 280 ms, p95 293 ms, max 302 ms.
 - macOS Standalone, VST3, VST3 Instrument and AU targets compiled locally with nested universal camera helpers.
-- Linux server CI `31309925330` succeeded and produced the H.264 deployment bundle.
-- Pending: latest Windows/ASIO/macOS/Linux-client CI, remote deployment, physical camera/DAW audio-glitch checks, and OBS UI acceptance.
+- OBS 32.2.1 opened `rtsp://127.0.0.1:28559/SB_test` as a real `ffmpeg_source`; MediaMTX reported an active RTSP reader with increasing bytes.
+- The fixed-source round passed all five CI workflows at `1c64dac`; downloaded macOS, Windows, ASIO and Linux installers were inspected for expected bundles, helpers and licenses.
+- Latest server bundle CI `31310828230` passed at `55f0324`; SHA-256 `9625e73bf898fa50ba6c3c9a9b740325517cf3f0bc10c7aeaaf4ea9c21ad9e0a`.
+- Pending: remote deployment, physical Windows camera/DAW audio-glitch checks, and public ICE/RTSP verification.
+- The macOS `.pkg` is intentionally an unsigned test installer: no Developer ID Installer identity or notarization credentials are configured.

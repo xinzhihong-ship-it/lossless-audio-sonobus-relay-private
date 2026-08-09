@@ -16,6 +16,12 @@ copy_info_plist() {
   fi
 }
 
+set_minimum_version() {
+  local plist="$1/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 10.13" "$plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 10.13" "$plist"
+}
+
 sign_bundle() {
   local bundle="$1"
   local entitlements="$2"
@@ -23,9 +29,12 @@ sign_bundle() {
     return
   fi
 
+  set_minimum_version "$bundle"
+
   local helpers="$bundle/Contents/Helpers"
   if [[ -d "$helpers" ]]; then
     while IFS= read -r -d '' helper; do
+      set_minimum_version "$helper"
       codesign --force --sign - --options runtime --entitlements "$VIDEO_HELPER_ENTITLEMENTS" "$helper"
     done < <(find "$helpers" -name SonoBusVideoHelper.app -type d -print0)
   fi

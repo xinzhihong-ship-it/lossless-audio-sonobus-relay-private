@@ -27,9 +27,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Download pinned FFmpeg runtime
         shell: pwsh
@@ -118,18 +119,22 @@ jobs:
             /DSBASIOSUFFIX="" `
             tools/windows-installer/sonobus-installer.iss
 
+      - name: Verify installer payload
+        shell: pwsh
+        run: tools/windows-installer/verify-installer.ps1 -Installer (Get-ChildItem installer-output/*.exe).FullName
+
       - name: Package portable zip
         shell: pwsh
         run: Compress-Archive -Path artifacts/windows-x64/* -DestinationPath sonobus-windows-x64.zip -Force
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sonobus-windows-x64
           path: sonobus-windows-x64.zip
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sonobus-windows-x64-installer
           path: installer-output/*.exe

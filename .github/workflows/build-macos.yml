@@ -12,6 +12,7 @@ on:
       - ".github/workflows/build-macos.yml"
       - "sonobus/**"
       - "tools/macos/**"
+      - "tools/fix-macos-sonobus-bundles.sh"
       - "README.md"
       - "LICENSE"
       - "LICENSE_EXCEPTION"
@@ -27,9 +28,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Build pinned universal FFmpeg runtime
         run: |
@@ -54,6 +56,12 @@ jobs:
 
       - name: Verify bundled FFmpeg runtimes
         run: |
+          verify_minos() {
+            local binary="$1"
+            vtool -arch x86_64 -show-build "$binary" | grep -Eq '(version|minos) 10\.13'
+            vtool -arch arm64 -show-build "$binary" | grep -Eq 'minos 11\.0'
+          }
+
           for runtime in \
             sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBus.app/Contents/Helpers/SonoBusVideoHelper.app/Contents/MacOS/ffmpeg \
             sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3/Contents/Helpers/SonoBusVideoHelper.app/Contents/MacOS/ffmpeg \
@@ -64,7 +72,14 @@ jobs:
             archs="$(lipo -archs "$runtime")"
             [[ " $archs " == *" x86_64 "* && " $archs " == *" arm64 "* ]]
             helper_app="$(dirname "$(dirname "$(dirname "$runtime")")")"
+            parent_bundle="$(dirname "$(dirname "$(dirname "$helper_app")")")"
+            parent_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$parent_bundle/Contents/Info.plist")"
+            [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$helper_app/Contents/Info.plist")" == 10.13 ]]
+            [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$parent_bundle/Contents/Info.plist")" == 10.13 ]]
+            verify_minos "$runtime"
+            verify_minos "$parent_bundle/Contents/MacOS/$parent_executable"
             codesign --verify --strict "$helper_app"
+            codesign --verify --deep --strict "$parent_bundle"
             codesign -d --entitlements :- "$helper_app" 2>&1 | grep -q com.apple.security.device.camera
           done
 
@@ -93,13 +108,13 @@ jobs:
           tools/macos/build-pkg.sh 0.1.4 sonobus-macos-universal.pkg
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sonobus-macos-universal
           path: sonobus-macos-universal.zip
 
       - name: Upload pkg installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sonobus-macos-universal-installer
           path: sonobus-macos-universal.pkg
