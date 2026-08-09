@@ -11,6 +11,7 @@
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Media.Capture.h>
 #include <winrt/Windows.Media.Capture.Frames.h>
@@ -35,7 +36,7 @@ using namespace Windows::Media::Capture;
 using namespace Windows::Media::Capture::Frames;
 using namespace Windows::Media::MediaProperties;
 
-struct __declspec(uuid("5B0D3235-4DBA-4D44-8654-1D7689D2E1F0")) IMemoryBufferByteAccess : IUnknown
+struct __declspec(uuid("5B0D3235-4DBA-4D44-8654-1D7689D2E1F0")) IMemoryBufferByteAccess : ::IUnknown
 {
     virtual HRESULT __stdcall GetBuffer(uint8_t** value, uint32_t* capacity) = 0;
 };
@@ -173,7 +174,7 @@ bool copyNv12(const SoftwareBitmap& input, std::vector<uint8_t>& output)
         const auto rows = planeIndex == 0 ? height : height / 2;
         for (size_t row = 0; row < rows; ++row)
         {
-            const auto sourceIndex = static_cast<size_t>(plane.StartIndex()) + row * static_cast<size_t>(plane.Stride());
+            const auto sourceIndex = static_cast<size_t>(plane.StartIndex) + row * static_cast<size_t>(plane.Stride);
             if (sourceIndex + width > capacity || destination + width > output.size()) return false;
             std::copy_n(bytes + sourceIndex, width, output.data() + destination);
             destination += width;
@@ -408,7 +409,7 @@ int publish(const std::vector<std::wstring>& args)
     if (device.empty() || ffmpeg.empty() || !width || !height || separator == args.end()) return 2;
     std::vector<std::wstring> outputArguments(separator + 1, args.end());
 
-    auto camera = startReader(device, width, height);
+    auto camera = startReader(hstring(device), width, height);
     auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height);
     std::cout << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height << "\n" << std::flush;
 
@@ -478,7 +479,7 @@ int wmain(int argc, wchar_t** argv)
         if (std::find(args.begin(), args.end(), L"--modes") != args.end())
         {
             const auto device = option(args, L"--device");
-            return device.empty() ? 2 : listModes(device);
+            return device.empty() ? 2 : listModes(hstring(device));
         }
         if (std::find(args.begin(), args.end(), L"--publish") != args.end()) return publish(args);
         return 2;
