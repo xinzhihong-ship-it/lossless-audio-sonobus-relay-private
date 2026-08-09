@@ -47,6 +47,14 @@ jobs:
           $license = Get-ChildItem -Path $extract -Filter LICENSE -File -Recurse | Select-Object -First 1
           $readme = Get-ChildItem -Path $extract -Filter README.txt -File -Recurse | Select-Object -First 1
           if ($null -eq $ffmpeg -or $null -eq $license -or $null -eq $readme) { throw "FFmpeg runtime archive is incomplete." }
+          $versionInfo = (& $ffmpeg.FullName -hide_banner -version 2>&1 | Out-String)
+          $devices = (& $ffmpeg.FullName -hide_banner -devices 2>&1 | Out-String)
+          $encoders = (& $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String)
+          $muxers = (& $ffmpeg.FullName -hide_banner -muxers 2>&1 | Out-String)
+          if ($versionInfo -notmatch "ffmpeg version 7\.1\.1") { throw "Unexpected FFmpeg version." }
+          if ($devices -notmatch "\bdshow\b") { throw "FFmpeg runtime lacks DirectShow capture." }
+          if ($encoders -notmatch "\b(h264_nvenc|h264_qsv|h264_amf|h264_mf|libx264)\b") { throw "FFmpeg runtime lacks an H.264 encoder." }
+          if ($muxers -notmatch "\brtsp\b") { throw "FFmpeg runtime lacks the RTSP muxer." }
           "SONOBUS_FFMPEG_PATH=$($ffmpeg.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
           "SONOBUS_FFMPEG_LICENSE=$($license.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
           "SONOBUS_FFMPEG_README=$($readme.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
