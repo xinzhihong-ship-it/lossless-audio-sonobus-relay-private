@@ -64,6 +64,7 @@ private:
     juce::MemoryBlock latestJpeg;
     juce::String activeCamera;
     juce::uint32 frameNumber = 0;
+    std::atomic<juce::uint32> lastEncodedFrameAt { 0 };
 
     std::atomic<Status> status { Status::idle };
 #if SONOBUS_CAMERA_SUPPORTED

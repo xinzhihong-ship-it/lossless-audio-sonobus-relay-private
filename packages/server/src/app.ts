@@ -1965,6 +1965,11 @@ const videoViewerPageHtml = String.raw`<!doctype html>
     #status { color: #aab5c2; margin: 8px 0 16px; }
     #frame { width: 100%; min-height: 420px; object-fit: contain; background: #000; border: 1px solid #303844; border-radius: 12px; }
     .hint { color: #7d8997; font-size: 13px; margin-top: 12px; }
+    html.obs, html.obs body { background: transparent; }
+    html.obs body { display: block; min-height: 0; overflow: hidden; }
+    html.obs main { width: 100vw; height: 100vh; }
+    html.obs h1, html.obs #status, html.obs .hint { display: none; }
+    html.obs #frame { width: 100vw; height: 100vh; min-height: 0; border: 0; border-radius: 0; background: transparent; }
   </style>
 </head>
 <body>
@@ -1977,11 +1982,37 @@ const videoViewerPageHtml = String.raw`<!doctype html>
   <script>
     const params = new URLSearchParams(location.search);
     const room = params.get("room") || "";
+    const obsMode = params.get("obs") === "1";
     const title = document.getElementById("title");
     const status = document.getElementById("status");
     const frame = document.getElementById("frame");
     let previousUrl = "";
+    let pendingFrame = null;
+    let rendering = false;
+    if (obsMode) document.documentElement.classList.add("obs");
     title.textContent = room ? "SonoBus 视频：" + room : "SonoBus 视频";
+
+    function renderLatestFrame() {
+      if (rendering || !pendingFrame) return;
+      const blob = pendingFrame;
+      pendingFrame = null;
+      rendering = true;
+      const nextUrl = URL.createObjectURL(blob);
+      frame.onload = function () {
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+        previousUrl = nextUrl;
+        rendering = false;
+        renderLatestFrame();
+      };
+      frame.onerror = function () {
+        URL.revokeObjectURL(nextUrl);
+        rendering = false;
+        renderLatestFrame();
+      };
+      frame.src = nextUrl;
+      frame.hidden = false;
+    }
+
     if (!room) {
       status.textContent = "缺少视频房间参数。";
     } else {
@@ -1992,16 +2023,11 @@ const videoViewerPageHtml = String.raw`<!doctype html>
       socket.onopen = function () { status.textContent = "已连接，等待 SonoBus 视频发送端..."; };
       socket.onmessage = function (event) {
         if (typeof event.data === "string") return;
-        const nextUrl = URL.createObjectURL(event.data);
-        frame.onload = function () {
-          if (previousUrl) URL.revokeObjectURL(previousUrl);
-          previousUrl = nextUrl;
-        };
-        frame.src = nextUrl;
-        frame.hidden = false;
+        pendingFrame = event.data;
+        renderLatestFrame();
         status.textContent = "正在接收视频";
       };
-      socket.onclose = function () { status.textContent = "视频连接已断开。"; };
+      socket.onclose = function () { pendingFrame = null; status.textContent = "视频连接已断开。"; };
       socket.onerror = function () { status.textContent = "视频连接失败，请检查 19090/TCP。"; };
     }
   </script>
@@ -2542,12 +2568,20 @@ const adminPageHtml = String.raw`<!doctype html>
         const actions = tr.querySelector(".actions");
         if (!systemBridge) {
           if (videoRoom) {
+            const videoConnection = { ...connection, videoRoom };
             const videoButton = document.createElement("button");
             videoButton.className = "secondary";
             videoButton.textContent = "打开视频";
             videoButton.title = "在新页面打开该群组的视频房间";
-            videoButton.addEventListener("click", () => openVideo({ ...connection, videoRoom }));
+            videoButton.addEventListener("click", () => openVideo(videoConnection));
             actions.appendChild(videoButton);
+
+            const obsButton = document.createElement("button");
+            obsButton.className = "secondary";
+            obsButton.textContent = "复制 OBS 地址";
+            obsButton.title = "复制 OBS 浏览器源地址（不是媒体源）";
+            obsButton.addEventListener("click", () => copyObsUrl(videoConnection));
+            actions.appendChild(obsButton);
           }
           const kickButton = document.createElement("button");
           kickButton.className = "danger";
@@ -2614,15 +2648,38 @@ const adminPageHtml = String.raw`<!doctype html>
       }
     }
 
-    function openVideo(connection) {
+    function videoUrl(connection, obsMode = false) {
       const room = connection.videoRoom || connection.group || connection.roomId;
-      if (!room) {
+      if (!room) return null;
+      const url = new URL("/video/view", location.origin);
+      url.searchParams.set("room", room.startsWith("SB_") ? room : "SB_" + room);
+      if (obsMode) url.searchParams.set("obs", "1");
+      return url;
+    }
+
+    function openVideo(connection) {
+      const url = videoUrl(connection);
+      if (!url) {
         setStatus(connectionStatus, "该连接没有视频房间。", true);
         return;
       }
-      const url = new URL("/video/view", location.origin);
-      url.searchParams.set("room", room.startsWith("SB_") ? room : "SB_" + room);
       window.open(url.toString(), "_blank", "noopener");
+    }
+
+    async function copyObsUrl(connection) {
+      const url = videoUrl(connection, true);
+      if (!url) {
+        setStatus(connectionStatus, "该连接没有视频房间。", true);
+        return;
+      }
+      const text = url.toString();
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus(connectionStatus, "已复制 OBS 浏览器源地址：" + text, false, true);
+      } catch {
+        window.prompt("复制下面地址，并在 OBS 中添加“浏览器”源：", text);
+        setStatus(connectionStatus, "请在弹出的窗口中复制 OBS 浏览器源地址。");
+      }
     }
 
     function connectionPayload(connection) {

@@ -27,6 +27,7 @@ const MEDIA_HEADER_BYTES = 14;
 const MAX_MEDIA_CHUNKS = 512;
 const MAX_MEDIA_FRAME_BYTES = 2 * 1024 * 1024;
 const MEDIA_ASSEMBLY_TTL_MS = 2_000;
+const MAX_VIEWER_BUFFERED_BYTES = 128 * 1024;
 
 export class VideoRelayHub {
   private readonly publishers = new Map<string, VideoSocket>();
@@ -223,7 +224,8 @@ export class VideoRelayHub {
 
   private broadcastFrame(room: string, frame: Buffer): void {
     for (const viewer of this.viewers.values()) {
-      if (viewer.room !== room || viewer.socket.readyState !== WebSocket.OPEN) {
+      if (viewer.room !== room || viewer.socket.readyState !== WebSocket.OPEN
+        || viewer.socket.bufferedAmount > MAX_VIEWER_BUFFERED_BYTES) {
         continue;
       }
       viewer.socket.send(frame, { binary: true });

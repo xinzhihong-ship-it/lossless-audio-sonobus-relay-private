@@ -73,6 +73,7 @@ void VideoRelayClient::stop()
     const juce::ScopedLock lock(frameLock);
     latestJpeg.reset();
     frameNumber = 0;
+    lastEncodedFrameAt.store(0);
     activeCamera.clear();
     setStatus(Status::idle);
 }
@@ -117,9 +118,9 @@ void VideoRelayClient::run()
         camera.reset(juce::CameraDevice::openDevice(deviceIndex,
                                                      frameWidth,
                                                      frameHeight,
-                                                     1280,
-                                                     720,
-                                                     true));
+                                                     frameWidth,
+                                                     frameHeight,
+                                                     false));
         if (camera == nullptr)
         {
             setStatus(Status::cameraUnavailable);
@@ -196,7 +197,23 @@ void VideoRelayClient::run()
 #if SONOBUS_CAMERA_SUPPORTED
 void VideoRelayClient::imageReceived(const juce::Image& image)
 {
-    const auto jpeg = encodeJpeg(image);
+    if (image.isNull())
+        return;
+
+    const auto now = juce::Time::getMillisecondCounter();
+    const auto previous = lastEncodedFrameAt.load();
+    if (now - previous < static_cast<juce::uint32>(frameIntervalMs))
+        return;
+    lastEncodedFrameAt.store(now);
+
+    const auto scale = jmin(static_cast<float>(frameWidth) / static_cast<float>(image.getWidth()),
+                            static_cast<float>(frameHeight) / static_cast<float>(image.getHeight()));
+    const auto frame = scale < 1.0f
+        ? image.rescaled(jmax(1, juce::roundToInt(static_cast<float>(image.getWidth()) * scale)),
+                         jmax(1, juce::roundToInt(static_cast<float>(image.getHeight()) * scale)),
+                         juce::Graphics::mediumResamplingQuality)
+        : image;
+    const auto jpeg = encodeJpeg(frame);
     if (jpeg.getSize() == 0)
         return;
 

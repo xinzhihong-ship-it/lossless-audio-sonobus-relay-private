@@ -1834,7 +1834,7 @@ function encodeSbr1(header: Record<string, unknown>, payload: Buffer, type = 1):
   return packet;
 }
 
-test("video presence appears in admin connections and exposes a viewer action", async () => {
+test("video presence exposes browser and OBS low-latency viewer actions", async () => {
   const app = await createApp({
     jwtSecret: "test-secret",
     adminUsername: "admin",
@@ -1863,7 +1863,13 @@ test("video presence appears in admin connections and exposes a viewer action", 
 
     const html = await (await fetch(`${baseUrl}/admin`)).text();
     assert.match(html, /打开视频/);
-    assert.match(html, /video\/view/);
+    assert.match(html, /复制 OBS 地址/);
+    assert.match(html, /url\.searchParams\.set\("obs", "1"\)/);
+
+    const viewerHtml = await (await fetch(`${baseUrl}/video/view?room=SB_studio&obs=1`)).text();
+    assert.match(viewerHtml, /pendingFrame/);
+    assert.match(viewerHtml, /renderLatestFrame/);
+    assert.match(viewerHtml, /document\.documentElement\.classList\.add\("obs"\)/);
   } finally {
     await app.close();
   }
