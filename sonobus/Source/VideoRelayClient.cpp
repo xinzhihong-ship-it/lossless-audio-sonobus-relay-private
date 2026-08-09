@@ -223,7 +223,6 @@ bool VideoRelayClient::connectWebSocket()
         localCamera = activeCamera;
     }
 
-    socket.setTimeout(5000);
     if (! socket.connect(localHost, videoPort, 5000))
         return false;
 
@@ -360,7 +359,8 @@ juce::MemoryBlock VideoRelayClient::encodeJpeg(const juce::Image& image)
 {
     juce::MemoryOutputStream output;
     juce::JPEGImageFormat format;
-    if (! format.writeImageToStream(image, output, 7))
+    format.setQuality(0.7f);
+    if (! format.writeImageToStream(image, output))
         return {};
 
     juce::MemoryBlock result;
