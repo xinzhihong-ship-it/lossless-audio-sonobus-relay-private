@@ -698,6 +698,38 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
         const auto failure = cameraFailureMessage(output);
         error = failure.isNotEmpty() ? failure : sonobus::video::translated(u8"未检测到摄像头");
     }
+    // DirectShow devices: physical UVC cameras again, plus virtual cameras from OBS, YY etc.
+    // that MediaFoundation never exposes. Virtual cameras can only be captured via DirectShow.
+    {
+        juce::ChildProcess dshow;
+        if (dshow.start({ ffmpegPath, "-hide_banner", "-f", "dshow", "-list_devices", "true", "-i", "dummy" },
+                        juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            juce::String dshowOutput;
+            if (runProbe(dshow, 10000, dshowOutput))
+            {
+                bool inVideoSection = false;
+                for (const auto& line : juce::StringArray::fromLines(dshowOutput))
+                {
+                    if (line.contains("DirectShow video devices")) { inVideoSection = true; continue; }
+                    if (line.contains("DirectShow audio devices")) { inVideoSection = false; continue; }
+                    if (! inVideoSection) continue;
+                    const auto openQuote = line.indexOfChar('"');
+                    if (openQuote < 0) continue;
+                    const auto closeQuote = line.indexOfChar('"', openQuote + 1);
+                    if (closeQuote < 0) continue;
+                    const auto name = line.substring(openQuote + 1, closeQuote).trim();
+                    if (name.isEmpty()) continue;
+                    // Skip names already listed by the MediaFoundation helper.
+                    bool alreadyListed = false;
+                    for (const auto& existing : result)
+                        if (existing.name == name) { alreadyListed = true; break; }
+                    if (! alreadyListed)
+                        result.add({ "dshow:" + name, name });
+                }
+            }
+        }
+    }
 #elif JUCE_MAC
     const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", "" };
     juce::ChildProcess probe;
@@ -915,9 +947,13 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     const juce::StringArray preferred { "libx264" };
 #endif
     juce::String launchErrors;
+    // Virtual DirectShow cameras (OBS/YY etc.) are not MediaCapture devices at all;
+    // they bypass the helper entirely and go straight to the DirectShow fallback below.
+    const auto dshowOnly = desired.cameraDeviceId.startsWith("dshow:");
     for (const auto& encoder : preferred)
     {
         if (threadShouldExit()) break;
+        if (dshowOnly) break;
         if (! encoders.contains(encoder)) continue;
 #if JUCE_WINDOWS
         // Skip synthetic lavfi probes on Windows: antivirus startup scans can blow a 2s budget,
