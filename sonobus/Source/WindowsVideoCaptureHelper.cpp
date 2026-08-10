@@ -163,10 +163,10 @@ CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth
     if (!session.source) throw hresult_error(E_FAIL, L"No color camera source was exposed.");
     if (!session.mode.width || !session.mode.height || session.mode.fps <= 0.0)
         throw hresult_error(MF_E_INVALIDMEDIATYPE, L"The current shared camera stream has no valid frame rate.");
-    if (requestedWidth && requestedHeight
-        && (session.mode.width != requestedWidth || session.mode.height != requestedHeight
-            || (requestedFps > 0.0 && std::abs(session.mode.fps - requestedFps) > 1.0)))
-        throw hresult_error(MF_E_INVALIDMEDIATYPE, L"The requested mode is not the current shared camera mode.");
+    // SharedReadOnly formats can change between enumeration and publish startup; use the actual current mode.
+    (void) requestedWidth;
+    (void) requestedHeight;
+    (void) requestedFps;
     return session;
 }
 
