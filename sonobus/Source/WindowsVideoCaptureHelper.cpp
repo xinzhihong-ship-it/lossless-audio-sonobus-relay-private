@@ -552,7 +552,7 @@ int publish(const std::vector<std::wstring>& args)
         const auto code = error.code();
         const auto busy = code == E_ACCESSDENIED || code == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
                        || code == HRESULT_FROM_WIN32(ERROR_BUSY) || code == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED
-                       || code == MF_E_VIDEO_RECORDING_DEVICE_IN_USE;
+                       || code == 0xC00D3704;  // MF_E_VIDEO_RECORDING_DEVICE_IN_USE
         if (! busy) throw;
         camera = startReader(hstring(device), width, height, fps, true);
         shared = true;
