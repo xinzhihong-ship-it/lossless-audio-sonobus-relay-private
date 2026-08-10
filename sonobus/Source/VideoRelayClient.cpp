@@ -1000,8 +1000,10 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         if (dshowDevice.isNotEmpty())
         {
             auto process = std::make_unique<juce::ChildProcess>();
+            // ffmpeg dshow requires the video= prefix; bare @device_sw_... paths are
+            // rejected with "Malformed dshow input string".
             auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin",
-                                                 "-f", "dshow", "-i", dshowDevice };
+                                                 "-f", "dshow", "-i", "video=" + dshowDevice };
             arguments.add("-an");
             arguments.addArray({ "-fps_mode", "passthrough", "-c:v", "libx264" });
             arguments.addArray(encoderArguments("libx264"));
