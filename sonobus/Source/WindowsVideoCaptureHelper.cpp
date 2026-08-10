@@ -582,26 +582,41 @@ int listCameras(const std::vector<std::wstring>& args)
         const auto output = runCommandCapture(quoteArgument(ffmpeg) + L" -hide_banner -f dshow -list_devices true -i dummy");
         std::istringstream lines(output);
         std::string line;
+        std::vector<std::pair<std::string, std::string>> dshowDevices;  // name, alternative name
         while (std::getline(lines, line))
         {
-            if (line.find("Alternative name") != std::string::npos) continue;
+            const auto altMarker = line.find("Alternative name");
+            if (altMarker != std::string::npos)
+            {
+                const auto openQuote = line.find('"', altMarker);
+                const auto closeQuote = openQuote == std::string::npos ? std::string::npos : line.find('"', openQuote + 1);
+                if (openQuote != std::string::npos && closeQuote != std::string::npos && ! dshowDevices.empty())
+                    dshowDevices.back().second = line.substr(openQuote + 1, closeQuote - openQuote - 1);
+                continue;
+            }
             if (line.find("(audio)") != std::string::npos) continue;
-            const auto openQuote = line.find('\"');
+            const auto openQuote = line.find('"');
             if (openQuote == std::string::npos) continue;
-            const auto closeQuote = line.find('\"', openQuote + 1);
+            const auto closeQuote = line.find('"', openQuote + 1);
             if (closeQuote == std::string::npos) continue;
             auto name = line.substr(openQuote + 1, closeQuote - openQuote - 1);
             if (name.empty()) continue;
             auto lower = name;
             std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (lower.find("audio") != std::string::npos || lower.find("microphone") != std::string::npos) continue;
-            const auto cleaned = cleanField(name);
+            dshowDevices.emplace_back(cleanField(name), std::string());
+        }
+        for (const auto& [name, alternative] : dshowDevices)
+        {
             bool duplicate = false;
             for (const auto& existing : listedNames)
-                if (existing == cleaned) { duplicate = true; break; }
+                if (existing == name) { duplicate = true; break; }
             if (duplicate) continue;
-            std::cout << "SONOBUS_CAMERA\tdshow:" << cleaned << '\t' << cleaned << '\n';
-            listedNames.push_back(cleaned);
+            // Prefer the ASCII alternative name (@device_sw_...) as the device id so the
+            // capture step never has to match Chinese/localised display names.
+            const auto deviceId = alternative.empty() ? name : alternative;
+            std::cout << "SONOBUS_CAMERA\tdshow:" << cleanField(deviceId) << '\t' << name << '\n';
+            listedNames.push_back(name);
         }
     }
     return 0;

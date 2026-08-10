@@ -991,14 +991,17 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     // (both exclusive and shared attempts fail with E_FAIL). DirectShow works for every UVC
     // camera, so fall back to ffmpeg dshow capture with libx264.
     {
-        juce::String dshowName;
+        // dshow: id now carries the ASCII alternative name (@device_sw_...) when available,
+        // falling back to the display name, so capture never has to match Chinese names.
+        juce::String dshowDevice;
         for (const auto& device : devices)
-            if (device.id == desired.cameraDeviceId) dshowName = device.name;
-        if (dshowName.isNotEmpty())
+            if (device.id == desired.cameraDeviceId)
+                dshowDevice = desired.cameraDeviceId.fromFirstOccurrenceOf("dshow:", false, false);
+        if (dshowDevice.isNotEmpty())
         {
             auto process = std::make_unique<juce::ChildProcess>();
             auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin",
-                                                 "-f", "dshow", "-i", dshowName };
+                                                 "-f", "dshow", "-i", dshowDevice };
             arguments.add("-an");
             arguments.addArray({ "-fps_mode", "passthrough", "-c:v", "libx264" });
             arguments.addArray(encoderArguments("libx264"));
@@ -1025,7 +1028,9 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             if (process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)
                 && ! process->waitForProcessToFinish(1500))
             {
-                auto cameraName = dshowName;
+                auto cameraName = desired.cameraDeviceId;
+                for (const auto& device : devices)
+                    if (device.id == desired.cameraDeviceId) cameraName = device.name;
                 {
                     const juce::ScopedLock lock(stateLock);
                     publisher = std::move(process);
