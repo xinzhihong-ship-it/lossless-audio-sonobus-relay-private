@@ -72,6 +72,7 @@ struct CaptureSession
     event_token failedToken {};
     Mode mode;
     std::shared_ptr<FrameState> state;
+    std::vector<MediaFrameSource> sources;
 };
 
 std::string cleanField(std::string value)
@@ -158,16 +159,21 @@ CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth
     {
         const auto source = entry.Value();
         if (source.Info().SourceKind() != MediaFrameSourceKind::Color) continue;
-        const auto mode = currentMode(source);
-        if (!session.source || isPreferredMode(mode, session.mode))
-        {
-            session.source = source;
-            session.mode = mode;
-        }
+        session.sources.push_back(source);
     }
-    if (!session.source) throw hresult_error(E_FAIL, L"No color camera source was exposed.");
-    if (!session.mode.width || !session.mode.height || session.mode.fps <= 0.0)
-        throw hresult_error(MF_E_INVALIDMEDIATYPE, L"The current shared camera stream has no valid frame rate.");
+    if (session.sources.empty()) throw hresult_error(E_FAIL, L"No color camera source was exposed.");
+    // Try the highest-throughput source first, but keep the others as fallbacks: on some
+    // cameras only one of several color sources actually produces frames.
+    std::sort(session.sources.begin(), session.sources.end(), [](const MediaFrameSource& left, const MediaFrameSource& right)
+    {
+        return isPreferredMode(currentMode(left), currentMode(right));
+    });
+    for (const auto& source : session.sources)
+    {
+        const auto mode = currentMode(source);
+        std::cout << "source_candidate=" << mode.width << "x" << mode.height << "@" << mode.fps << '\n';
+    }
+    std::cout << std::flush;
     // Formats can change between enumeration and publish startup; use the actual current mode.
     (void) requestedWidth;
     (void) requestedHeight;
@@ -207,9 +213,13 @@ void emitError(HRESULT code, const std::string& stage = {})
     std::cout << ":0x" << std::hex << static_cast<uint32_t>(code) << std::dec << std::endl;
 }
 
-CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t height, double fps, bool shared)
+CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
 {
-    auto session = openSharedCamera(deviceId, width, height, fps, shared);
+    if (sourceIndex >= session.sources.size()) throw hresult_error(E_FAIL, L"No usable camera frame source.");
+    session.source = session.sources[sourceIndex];
+    session.mode = currentMode(session.source);
+    if (!session.mode.width || !session.mode.height || session.mode.fps <= 0.0)
+        throw hresult_error(MF_E_INVALIDMEDIATYPE, L"The current camera stream has no valid frame rate.");
     session.state = std::make_shared<FrameState>();
     session.failedToken = session.capture.Failed([state = session.state](const MediaCapture&, const MediaCaptureFailedEventArgs& args)
     {
@@ -219,7 +229,6 @@ CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t hei
         state->failureStage = "capture";
         state->changed.notify_all();
     });
-
     try
     {
         session.reader = session.capture.CreateFrameReaderAsync(session.source, MediaEncodingSubtypes::Nv12()).get();
@@ -289,6 +298,18 @@ CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t hei
     if (session.reader.StartAsync().get() != MediaFrameReaderStartStatus::Success)
         throw hresult_error(E_FAIL, L"The shared camera frame reader could not start.");
     return session;
+}
+
+void stopReader(CaptureSession& session)
+{
+    if (session.reader)
+    {
+        session.reader.FrameArrived(session.frameToken);
+        session.reader.Close();
+        session.reader = nullptr;
+    }
+    session.source = nullptr;
+    session.state.reset();
 }
 
 std::wstring quoteArgument(const std::wstring& value)
@@ -513,8 +534,11 @@ int listCameras()
 int listModes(const hstring& deviceId)
 {
     const auto session = openSharedCamera(deviceId);
-    const auto& mode = session.mode;
-    std::cout << "SONOBUS_MODE\t" << mode.width << '\t' << mode.height << '\t' << mode.fps << '\n';
+    for (const auto& source : session.sources)
+    {
+        const auto mode = currentMode(source);
+        std::cout << "SONOBUS_MODE\t" << mode.width << '\t' << mode.height << '\t' << mode.fps << '\n';
+    }
     return 0;
 }
 
@@ -543,9 +567,10 @@ int publish(const std::vector<std::wstring>& args)
     // frames at all; if another app already owns the camera, fall back to SharedReadOnly.
     CaptureSession camera;
     bool shared = false;
+    size_t sourceIndex = 0;
     try
     {
-        camera = startReader(hstring(device), width, height, fps, false);
+        camera = openSharedCamera(hstring(device), width, height, fps, false);
     }
     catch (const hresult_error& error)
     {
@@ -554,12 +579,14 @@ int publish(const std::vector<std::wstring>& args)
                        || code == HRESULT_FROM_WIN32(ERROR_BUSY) || code == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED
                        || code == 0xC00D3704;  // MF_E_VIDEO_RECORDING_DEVICE_IN_USE
         if (! busy) throw;
-        camera = startReader(hstring(device), width, height, fps, true);
+        camera = openSharedCamera(hstring(device), width, height, fps, true);
         shared = true;
     }
+    startReaderForSource(camera, sourceIndex);
     auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height, camera.mode.fps,
                              maxHeight, maxFps, maxBitrate);
     std::cout << "capture_mode=" << (shared ? "shared" : "exclusive") << '\n'
+              << "capture_source=" << sourceIndex << '\n'
               << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height
               << "\ncapture_nominal_fps=" << camera.mode.fps << "\n" << std::flush;
 
@@ -586,7 +613,33 @@ int publish(const std::vector<std::wstring>& args)
             }
             if (camera.state->sequence == lastSequence)
             {
-                const auto stage = camera.state->frameArrivals == 0 ? "no-frame-arrival"
+                // No frames yet: if this is the first frame and more color sources remain,
+                // some cameras expose multiple color sources where only one produces frames.
+                bool switchedSource = false;
+                if (lastSequence == 0 && sourceIndex + 1 < camera.sources.size())
+                {
+                    do
+                    {
+                        stopReader(camera);
+                        ++sourceIndex;
+                        try
+                        {
+                            startReaderForSource(camera, sourceIndex);
+                            switchedSource = true;
+                        }
+                        catch (...)
+                        {
+                            // Source unusable; keep trying the remaining candidates.
+                        }
+                    } while (! switchedSource && sourceIndex + 1 < camera.sources.size());
+                    if (switchedSource)
+                    {
+                        std::cout << "capture_source=" << sourceIndex << '\n' << std::flush;
+                        continue;
+                    }
+                }
+                const auto stage = ! camera.state ? "no-source"
+                                  : camera.state->frameArrivals == 0 ? "no-frame-arrival"
                                   : camera.state->emptyFrames > 0 ? "empty-frame" : "no-frame-progress";
                 std::cout << "SONOBUS_ERROR=unavailable:frame-timeout:" << stage << std::endl;
                 return 3;
