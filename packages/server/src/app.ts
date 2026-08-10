@@ -2879,23 +2879,29 @@ const adminPageHtml = String.raw`<!doctype html>
           option.textContent = optionData[1];
           qualitySelect.appendChild(option);
         }
-        qualitySelect.value = String(value || 0);
+        qualitySelect.value = String(options.some(([optionValue]) => optionValue === Number(value)) ? value || 0 : 0);
         label.appendChild(caption);
         label.appendChild(qualitySelect);
         qualityRow.appendChild(label);
         return qualitySelect;
       };
+      const captureHeight = Number(control.captureHeight) || 0;
+      const captureFps = Number(control.captureFps) || 0;
+      const onlySupported = (options, maximum) => options.filter(([value]) => !value || !maximum || value <= maximum + 0.5);
       const captureSummary = control.captureWidth && control.captureHeight
         ? "（当前共享最高 " + control.captureWidth + "×" + control.captureHeight
-          + (control.captureFps ? "@" + Number(control.captureFps).toFixed(1) : "") + "）"
+          + (captureFps ? "@" + captureFps.toFixed(1) : "") + "）"
         : "";
-      const heightSelect = makeQualitySelect("分辨率上限" + captureSummary, control.maxHeight, [
-        [0, "最高"], [2160, "2160p"], [1440, "1440p"], [1080, "1080p"], [720, "720p"], [480, "480p"], [360, "360p"]
-      ]);
-      const fpsSelect = makeQualitySelect("帧率上限", control.maxFps, [
-        [0, "最高"], [60, "60 FPS"], [50, "50 FPS"], [30, "30 FPS"], [25, "25 FPS"], [24, "24 FPS"], [15, "15 FPS"]
-      ]);
-      const bitrateSelect = makeQualitySelect("码率上限", control.maxBitrate, [
+      const captureFpsSummary = captureFps ? "（当前共享最高 " + captureFps.toFixed(1) + " FPS）" : "";
+      const heightOptions = onlySupported(
+        [[0, "最高"], [2160, "2160p"], [1440, "1440p"], [1080, "1080p"], [720, "720p"], [480, "480p"], [360, "360p"]],
+        captureHeight);
+      const fpsOptions = onlySupported(
+        [[0, "最高"], [60, "60 FPS"], [50, "50 FPS"], [30, "30 FPS"], [25, "25 FPS"], [24, "24 FPS"], [15, "15 FPS"]],
+        captureFps);
+      const heightSelect = makeQualitySelect("分辨率上限" + captureSummary, control.maxHeight, heightOptions);
+      const fpsSelect = makeQualitySelect("帧率上限" + captureFpsSummary, control.maxFps, fpsOptions);
+      const bitrateSelect = makeQualitySelect("码率上限（输出）", control.maxBitrate, [
         [0, "自动"], [20000000, "20 Mbps"], [12000000, "12 Mbps"], [8000000, "8 Mbps"], [5000000, "5 Mbps"], [3000000, "3 Mbps"], [1500000, "1.5 Mbps"]
       ]);
       const applyQuality = () => runAction(() => setCameraDesired(connection, control.enabled, select.value || null, {

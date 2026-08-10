@@ -76,13 +76,15 @@ public:
     void updateState()
     {
         const auto group = processor.getCurrentJoinedGroup();
+        const auto paired = processor.hasVideoPairing();
+        if (paired) localMessage.clear();
         auto statusText = sonobus::video::translated(u8"状态：") + processor.getVideoStatusText();
         const auto camera = processor.getVideoCameraName();
         if (camera.isNotEmpty()) statusText += sonobus::video::utf8(u8" · ") + camera;
         if (localMessage.isNotEmpty()) statusText += "\n" + localMessage;
         statusLabel.setText(statusText, dontSendNotification);
 
-        revokePairingButton.setEnabled(processor.hasVideoPairing());
+        revokePairingButton.setEnabled(paired);
         openButton.setEnabled(!group.isEmpty());
     }
 

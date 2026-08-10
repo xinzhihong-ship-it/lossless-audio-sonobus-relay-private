@@ -70,8 +70,14 @@ juce::String cameraFailureMessage(const juce::String& output)
         return sonobus::video::translated(u8"Windows 已拒绝摄像头权限；请允许桌面应用访问摄像头");
     if (output.containsIgnoreCase("shared-frame-rate-below-expected"))
         return sonobus::video::translated(u8"摄像头共享流实测帧率低于当前模式标称值；请关闭占用程序后等待重试");
-    if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable"))
-        return sonobus::video::translated(u8"摄像头当前共享模式不可用");
+    if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:frame-timeout"))
+        return sonobus::video::translated(u8"摄像头共享帧超时；请检查火绒和其他摄像头占用程序");
+    if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:"))
+    {
+        const auto detail = sonobus::video::lastOutputLine(output).fromFirstOccurrenceOf(":", false, false);
+        return sonobus::video::translated(u8"摄像头共享模式不可用")
+             + (detail.isNotEmpty() ? " (" + detail + ")" : juce::String());
+    }
     using sonobus::video::CameraFailure;
     switch (sonobus::video::classifyCameraFailure(output))
     {
@@ -185,7 +191,7 @@ void VideoRelayClient::run()
     CameraMode runningMode;
     juce::String lastAttemptRevision;
     double nextCameraAttemptMs = 0.0;
-    int retryDelayMs = 1000;
+    int retryDelayMs = 30000;
     double nextDeviceRefreshMs = 0.0;
     int deviceRefreshDelayMs = 1000;
     while (! threadShouldExit())
@@ -277,7 +283,7 @@ void VideoRelayClient::run()
             runningMode = {};
             lastAttemptRevision.clear();
             nextCameraAttemptMs = 0.0;
-            retryDelayMs = 1000;
+            retryDelayMs = 30000;
             setStatus(Status::waitingForAdmin);
         }
         else if (desired.cameraDeviceId.isEmpty())
@@ -316,7 +322,7 @@ void VideoRelayClient::run()
                 if (attemptChanged)
                 {
                     nextCameraAttemptMs = 0.0;
-                    retryDelayMs = 1000;
+                    retryDelayMs = 30000;
                 }
                 const auto nowMs = juce::Time::getMillisecondCounterHiRes();
                 bool hasPublisher = false;
@@ -590,7 +596,7 @@ bool VideoRelayClient::pollControl(DesiredState& desired, int& pollAfterMs)
     pollAfterMs = juce::jlimit(250, 5000, static_cast<int>(object->getProperty("pollAfterMs")));
     {
         const juce::ScopedLock lock(stateLock);
-        lastError.clear();
+        // Preserve camera/helper failures until the next successful capture state clears them.
         pairingRejected = false;
     }
     return desired.ingestPath.isNotEmpty() && desired.publishUser.isNotEmpty() && desired.publishNonce.isNotEmpty();
@@ -624,7 +630,7 @@ juce::var VideoRelayClient::makeStatusPayload() const
     {
         result->setProperty("captureWidth", captureMode.width);
         result->setProperty("captureHeight", captureMode.height);
-        if (captureFps > 0.0) result->setProperty("captureFps", captureFps);
+        result->setProperty("captureFps", captureFps > 0.0 ? captureFps : captureMode.fps);
     }
     if (actualBitrate > 0) result->setProperty("bitrate", actualBitrate);
     if (lastError.isNotEmpty()) result->setProperty("error", lastError);
@@ -769,6 +775,11 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
 VideoRelayClient::CameraMode VideoRelayClient::findPreferredCameraMode(const juce::String& ffmpegPath,
                                                                     const juce::String& cameraDeviceId)
 {
+#if JUCE_WINDOWS
+    // The helper selects the actual current SharedReadOnly source once, inside --publish.
+    juce::ignoreUnused(ffmpegPath, cameraDeviceId);
+    return { 1280, 720, 30.0 };
+#else
     juce::String modeError;
     const auto modes = getPreferredCameraModes(ffmpegPath, cameraDeviceId, modeError);
     for (const auto mode : modes)
@@ -785,6 +796,7 @@ VideoRelayClient::CameraMode VideoRelayClient::findPreferredCameraMode(const juc
         lastError = modeError;
     }
     return {};
+#endif
 }
 
 bool VideoRelayClient::probeCameraMode(const juce::String& ffmpegPath,
@@ -913,7 +925,14 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             activeCameraId = desired.cameraDeviceId;
             activeCamera = cameraName;
             activeEncoder = encoder;
+#if JUCE_WINDOWS
+            captureMode = {};
+#else
             captureMode = mode;
+#endif
+            activeMaxHeight = desired.maxHeight;
+            activeMaxFps = desired.maxFps;
+            activeMaxBitrate = desired.maxBitrate;
             activeMode = outputMode;
             captureFps = 0.0;
             actualFps = 0.0;
@@ -948,6 +967,9 @@ void VideoRelayClient::stopPublisher()
     captureFps = 0.0;
     actualFps = 0.0;
     actualBitrate = 0;
+    activeMaxHeight = 0;
+    activeMaxFps = 0.0;
+    activeMaxBitrate = 0;
     progressBuffer.clear();
 }
 
@@ -974,6 +996,7 @@ void VideoRelayClient::readPublisherProgress()
             const auto minimumFps = juce::jmax(1.0, captureMode.fps - 1.0);
             if (captureFps >= minimumFps)
             {
+                lastError.clear();
                 status.store(Status::online);
             }
         }
@@ -991,6 +1014,14 @@ void VideoRelayClient::readPublisherProgress()
         }
         if (line.startsWith("SONOBUS_ERROR=")) lastError = cameraFailureMessage(line);
         else if (! line.containsChar('=') && line.isNotEmpty()) lastError = line.substring(0, 500);
+    }
+    if (captureMode.isValid())
+    {
+        DesiredState activeDesired;
+        activeDesired.maxHeight = activeMaxHeight;
+        activeDesired.maxFps = activeMaxFps;
+        activeDesired.maxBitrate = activeMaxBitrate;
+        activeMode = outputModeFor(captureMode, activeDesired);
     }
 }
 
@@ -1090,12 +1121,18 @@ juce::StringArray VideoRelayClient::publisherArguments(const juce::String& ffmpe
 {
 #if JUCE_WINDOWS
     auto arguments = juce::StringArray { findWindowsCaptureHelper(), "--publish", "--device", cameraDeviceId,
-                                         "--width", juce::String(mode.width), "--height", juce::String(mode.height),
-                                         "--fps", juce::String(mode.fps, 3), "--ffmpeg", ffmpegPath, "--" };
+                                         "--ffmpeg", ffmpegPath, "--max-height", juce::String(desired.maxHeight),
+                                         "--max-fps", juce::String(desired.maxFps, 3), "--max-bitrate",
+                                         juce::String(desired.maxBitrate), "--" };
+    arguments.addArray({ "-an", "-vf", "@SONOBUS_FILTER@", "-fps_mode", "passthrough", "-c:v", encoder });
+    arguments.addArray(encoderArguments(encoder));
+    arguments.addArray({ "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-bf", "0", "-g", "@SONOBUS_GOP@",
+                         "-b:v", "@SONOBUS_BITRATE@", "-maxrate", "@SONOBUS_BITRATE@",
+                         "-bufsize", "@SONOBUS_BUFSIZE@", "-progress", "pipe:1", "-nostats" });
+    juce::ignoreUnused(mode);
 #else
     auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin" };
     arguments.addArray(captureArguments(cameraDeviceId, mode));
-#endif
     const auto outputMode = outputModeFor(mode, desired);
     juce::StringArray filters;
     if (outputMode.width != mode.width || outputMode.height != mode.height)
@@ -1108,12 +1145,12 @@ juce::StringArray VideoRelayClient::publisherArguments(const juce::String& ffmpe
     if (! filters.isEmpty()) arguments.addArray({ "-vf", filters.joinIntoString(",") });
     arguments.addArray({ "-fps_mode", "passthrough", "-c:v", encoder });
     arguments.addArray(encoderArguments(encoder));
-
     const auto automaticBitrate = bitrateFor(outputMode.width, outputMode.height);
     const auto bitrate = desired.maxBitrate > 0 ? juce::jmin(desired.maxBitrate, automaticBitrate) : automaticBitrate;
     arguments.addArray({ "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-bf", "0", "-g", juce::String(gop),
                          "-b:v", juce::String(bitrate), "-maxrate", juce::String(bitrate),
                          "-bufsize", juce::String(bitrate / 2), "-progress", "pipe:1", "-nostats" });
+#endif
 
     juce::String localHost, localPairingId;
     juce::MemoryBlock localKey;

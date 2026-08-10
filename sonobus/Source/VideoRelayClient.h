@@ -138,6 +138,9 @@ private:
     double captureFps = 0.0;
     double actualFps = 0.0;
     int actualBitrate = 0;
+    int activeMaxHeight = 0;
+    double activeMaxFps = 0.0;
+    int activeMaxBitrate = 0;
     juce::uint64 sequence = 0;
     juce::String progressBuffer;
     bool pairingRejected = false;

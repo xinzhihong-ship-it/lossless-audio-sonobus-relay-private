@@ -327,8 +327,77 @@ private:
     }
 };
 
+Mode outputModeFor(Mode capture, uint32_t maxHeight, double maxFps)
+{
+    if (maxHeight > 0 && maxHeight < capture.height)
+    {
+        const auto sourceWidth = capture.width;
+        const auto sourceHeight = capture.height;
+        capture.height = maxHeight - (maxHeight % 2);
+        if (capture.height < 2) capture.height = 2;
+        const auto scaledWidth = static_cast<uint64_t>(sourceWidth) * capture.height / sourceHeight;
+        capture.width = static_cast<uint32_t>((scaledWidth / 2) * 2);
+        if (capture.width < 2) capture.width = 2;
+    }
+    if (maxFps > 0.0 && maxFps < capture.fps) capture.fps = maxFps;
+    capture.format = nullptr;
+    return capture;
+}
+
+uint32_t automaticBitrate(uint32_t width, uint32_t height)
+{
+    const auto pixels = static_cast<uint64_t>(width) * height;
+    if (pixels >= 3840ULL * 2160ULL) return 20000000;
+    if (pixels >= 2560ULL * 1440ULL) return 12000000;
+    if (pixels >= 1920ULL * 1080ULL) return 8000000;
+    if (pixels >= 1280ULL * 720ULL) return 5000000;
+    return 3000000;
+}
+
+std::wstring outputFilter(Mode capture, Mode output)
+{
+    std::wstring filter;
+    if (output.width != capture.width || output.height != capture.height)
+        filter = L"scale=" + std::to_wstring(output.width) + L":" + std::to_wstring(output.height) + L":flags=fast_bilinear";
+    if (output.fps + 0.01 < capture.fps)
+    {
+        if (!filter.empty()) filter += L",";
+        filter += L"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,"
+                + std::to_wstring(1.0 / output.fps) + L")";
+    }
+    return filter;
+}
+
+std::vector<std::wstring> expandOutputArguments(const std::vector<std::wstring>& input, Mode capture,
+                                                uint32_t maxHeight, double maxFps, uint32_t maxBitrate)
+{
+    const auto output = outputModeFor(capture, maxHeight, maxFps);
+    const auto automatic = automaticBitrate(output.width, output.height);
+    const auto bitrate = maxBitrate > 0 ? std::min(maxBitrate, automatic) : automatic;
+    const auto filter = outputFilter(capture, output);
+    const auto gop = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(output.fps)));
+    std::vector<std::wstring> result;
+    for (const auto& argument : input)
+    {
+        if (argument == L"@SONOBUS_FILTER@")
+        {
+            if (filter.empty())
+            {
+                if (!result.empty() && result.back() == L"-vf") result.pop_back();
+            }
+            else result.push_back(filter);
+        }
+        else if (argument == L"@SONOBUS_GOP@") result.push_back(std::to_wstring(gop));
+        else if (argument == L"@SONOBUS_BITRATE@") result.push_back(std::to_wstring(bitrate));
+        else if (argument == L"@SONOBUS_BUFSIZE@") result.push_back(std::to_wstring(bitrate / 2));
+        else result.push_back(argument);
+    }
+    return result;
+}
+
 ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstring>& outputArguments,
-                         uint32_t width, uint32_t height, double fps)
+                         uint32_t width, uint32_t height, double fps, uint32_t maxHeight,
+                         double maxFps, uint32_t maxBitrate)
 {
     SECURITY_ATTRIBUTES security { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
     HANDLE inputRead = INVALID_HANDLE_VALUE;
@@ -341,6 +410,8 @@ ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstr
         CloseHandle(inputWrite);
         throw hresult_error(HRESULT_FROM_WIN32(error));
     }
+    const auto capture = Mode { width, height, fps, nullptr };
+    const auto expandedArguments = expandOutputArguments(outputArguments, capture, maxHeight, maxFps, maxBitrate);
 
     std::vector<std::wstring> arguments {
         ffmpeg, L"-hide_banner", L"-loglevel", L"warning", L"-nostdin",
@@ -348,7 +419,7 @@ ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstr
         std::to_wstring(width) + L"x" + std::to_wstring(height),
         L"-framerate", std::to_wstring(fps), L"-use_wallclock_as_timestamps", L"1", L"-i", L"pipe:0"
     };
-    arguments.insert(arguments.end(), outputArguments.begin(), outputArguments.end());
+    arguments.insert(arguments.end(), expandedArguments.begin(), expandedArguments.end());
     std::wstring command;
     for (const auto& argument : arguments)
     {
@@ -428,12 +499,16 @@ int publish(const std::vector<std::wstring>& args)
     const auto width = numberOption(args, L"--width", 0);
     const auto height = numberOption(args, L"--height", 0);
     const auto fps = doubleOption(args, L"--fps", 0.0);
+    const auto maxHeight = numberOption(args, L"--max-height", 0);
+    const auto maxFps = doubleOption(args, L"--max-fps", 0.0);
+    const auto maxBitrate = numberOption(args, L"--max-bitrate", 0);
     const auto separator = std::find(args.begin(), args.end(), L"--");
-    if (device.empty() || ffmpeg.empty() || !width || !height || fps <= 0.0 || separator == args.end()) return 2;
+    if (device.empty() || ffmpeg.empty() || separator == args.end()) return 2;
     std::vector<std::wstring> outputArguments(separator + 1, args.end());
 
     auto camera = startReader(hstring(device), width, height, fps);
-    auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height, camera.mode.fps);
+    auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height, camera.mode.fps,
+                             maxHeight, maxFps, maxBitrate);
     std::cout << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height
               << "\ncapture_nominal_fps=" << camera.mode.fps << "\n" << std::flush;
 
