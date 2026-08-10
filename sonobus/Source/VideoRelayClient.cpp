@@ -70,6 +70,12 @@ juce::String cameraFailureMessage(const juce::String& output)
         return sonobus::video::translated(u8"Windows 已拒绝摄像头权限；请允许桌面应用访问摄像头");
     if (output.containsIgnoreCase("shared-frame-rate-below-expected"))
         return sonobus::video::translated(u8"摄像头共享流实测帧率低于当前模式标称值；请关闭占用程序后等待重试");
+    if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:frame-timeout:"))
+    {
+        const auto detail = sonobus::video::lastOutputLine(output).fromFirstOccurrenceOf("frame-timeout:", false, false);
+        return sonobus::video::translated(u8"摄像头共享帧超时")
+             + (detail.isNotEmpty() ? " (" + detail + ")" : juce::String());
+    }
     if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:frame-timeout"))
         return sonobus::video::translated(u8"摄像头共享帧超时；请检查火绒和其他摄像头占用程序");
     if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:"))

@@ -514,6 +514,12 @@ int listModes(const hstring& deviceId)
     return 0;
 }
 
+void pumpStaCallbacks()
+{
+    DWORD result = 0;
+    CoWaitForMultipleHandles(COWAIT_DISPATCH_CALLS | COWAIT_DISPATCH_WINDOW_MESSAGES, 10, 0, nullptr, &result);
+}
+
 int publish(const std::vector<std::wstring>& args)
 {
     const auto device = option(args, L"--device");
@@ -541,21 +547,24 @@ int publish(const std::vector<std::wstring>& args)
     {
         std::vector<uint8_t> frame;
         {
-            std::unique_lock lock(camera.state->mutex);
-            camera.state->changed.wait_for(lock, std::chrono::seconds(5), [&]
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            for (;;)
             {
-                return camera.state->failed || camera.state->sequence != lastSequence;
-            });
+                pumpStaCallbacks();
+                std::lock_guard lock(camera.state->mutex);
+                if (camera.state->failed || camera.state->sequence != lastSequence) break;
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    const auto stage = camera.state->frameArrivals == 0 ? "no-frame-arrival"
+                                      : camera.state->emptyFrames > 0 ? "empty-frame" : "no-frame-progress";
+                    std::cout << "SONOBUS_ERROR=unavailable:frame-timeout:" << stage << std::endl;
+                    return 3;
+                }
+            }
+            std::lock_guard lock(camera.state->mutex);
             if (camera.state->failed)
             {
                 emitError(camera.state->failureCode, camera.state->failureStage);
-                return 3;
-            }
-            if (camera.state->sequence == lastSequence)
-            {
-                const auto stage = camera.state->frameArrivals == 0 ? "no-frame-arrival"
-                                  : camera.state->emptyFrames > 0 ? "empty-frame" : "no-frame-progress";
-                std::cout << "SONOBUS_ERROR=unavailable:frame-timeout:" << stage << std::endl;
                 return 3;
             }
             lastSequence = camera.state->sequence;
@@ -591,7 +600,8 @@ int wmain(int argc, wchar_t** argv)
 {
     try
     {
-        init_apartment(apartment_type::multi_threaded);
+        // MediaCapture requires STA initialization; pump COM callbacks while waiting for frames.
+        init_apartment(apartment_type::single_threaded);
         std::vector<std::wstring> args(argv + 1, argv + argc);
         if (std::find(args.begin(), args.end(), L"--list") != args.end()) return listCameras();
         if (std::find(args.begin(), args.end(), L"--modes") != args.end())
