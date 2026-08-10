@@ -598,7 +598,18 @@ int publish(const std::vector<std::wstring>& args)
                               || code == 0xC00D3704  // MF_E_VIDEO_RECORDING_DEVICE_IN_USE
                               || code == E_FAIL;
         if (! retryShared) throw;
-        camera = openSharedCamera(hstring(device), width, height, fps, true);
+        std::cout << "SONOBUS_ERROR=unavailable:exclusive:0x" << std::hex << static_cast<uint32_t>(code)
+                  << std::dec << std::endl;
+        try
+        {
+            camera = openSharedCamera(hstring(device), width, height, fps, true);
+        }
+        catch (const hresult_error& sharedError)
+        {
+            std::cout << "SONOBUS_ERROR=unavailable:shared:0x" << std::hex << static_cast<uint32_t>(sharedError.code())
+                      << std::dec << std::endl;
+            throw;
+        }
         shared = true;
     }
     startReaderForSource(camera, sourceIndex);
