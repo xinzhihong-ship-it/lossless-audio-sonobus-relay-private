@@ -1188,7 +1188,9 @@ void VideoRelayClient::setStatus(Status newStatus, const juce::String& error)
 
 juce::String VideoRelayClient::getStatusText() const
 {
-    const juce::ScopedLock lock(stateLock);
+    const juce::ScopedTryLock lock(stateLock);
+    if (! lock.isLocked())
+        return sonobus::video::translated(u8"状态同步中…");
     const auto separator = sonobus::video::utf8(u8" · ");
     switch (getStatus())
     {
@@ -1214,7 +1216,8 @@ juce::String VideoRelayClient::getStatusText() const
 
 juce::String VideoRelayClient::getActiveCamera() const
 {
-    const juce::ScopedLock lock(stateLock);
+    const juce::ScopedTryLock lock(stateLock);
+    if (! lock.isLocked()) return {};
     return activeCamera;
 }
 

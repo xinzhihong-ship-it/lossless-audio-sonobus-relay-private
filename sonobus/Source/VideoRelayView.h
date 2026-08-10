@@ -4,6 +4,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <thread>
 
 #include "EffectsBaseView.h"
 #include "SonoTextButton.h"
@@ -40,7 +41,11 @@ public:
         openButton.setButtonText(sonobus::video::translated(u8"在浏览器打开群组视频"));
         openButton.setColour(TextButton::buttonColourId, Colour::fromFloatRGBA(0.1f, 0.4f, 0.6f, 0.6f));
         openButton.setColour(SonoTextButton::outlineColourId, Colour::fromFloatRGBA(0.5f, 0.5f, 0.5f, 0.4f));
-        openButton.onClick = [this] { generateURL().launchInDefaultBrowser(); };
+        openButton.onClick = [this]
+        {
+            const auto url = generateURL();
+            std::thread([url] { url.launchInDefaultBrowser(); }).detach();
+        };
 
         enableButton.setVisible(false);
         dragButton.setVisible(false);
