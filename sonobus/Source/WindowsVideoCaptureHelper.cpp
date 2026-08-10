@@ -26,6 +26,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <utility>
@@ -523,15 +524,85 @@ ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstr
     return child;
 }
 
-int listCameras()
+std::string runCommandCapture(const std::wstring& command)
 {
+    SECURITY_ATTRIBUTES security { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (! CreatePipe(&readPipe, &writePipe, &security, 0)) return {};
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOW startup {};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = writePipe;
+    startup.hStdError = writePipe;
+    PROCESS_INFORMATION process {};
+    std::vector<wchar_t> writable(command.begin(), command.end());
+    writable.push_back(0);
+    if (! CreateProcessW(nullptr, writable.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
+    {
+        CloseHandle(readPipe);
+        CloseHandle(writePipe);
+        return {};
+    }
+    CloseHandle(writePipe);
+    std::string output;
+    char buffer[4096];
+    DWORD bytes = 0;
+    while (ReadFile(readPipe, buffer, sizeof(buffer), &bytes, nullptr) && bytes > 0)
+        output.append(buffer, bytes);
+    WaitForSingleObject(process.hProcess, 10000);
+    CloseHandle(process.hProcess);
+    CloseHandle(process.hThread);
+    CloseHandle(readPipe);
+    return output;
+}
+
+int listCameras(const std::vector<std::wstring>& args)
+{
+    const auto ffmpeg = option(args, L"--ffmpeg");
+    std::vector<std::string> listedNames;
     for (const auto& group : MediaFrameSourceGroup::FindAllAsync().get())
     {
         bool hasColor = false;
         for (const auto& info : group.SourceInfos())
             if (info.SourceKind() == MediaFrameSourceKind::Color) { hasColor = true; break; }
         if (hasColor)
-            std::cout << "SONOBUS_CAMERA\t" << cleanField(to_string(group.Id())) << '\t' << cleanField(to_string(group.DisplayName())) << '\n';
+        {
+            const auto name = cleanField(to_string(group.DisplayName()));
+            std::cout << "SONOBUS_CAMERA\t" << cleanField(to_string(group.Id())) << '\t' << name << '\n';
+            listedNames.push_back(name);
+        }
+    }
+    // Virtual cameras (OBS/YY etc.) exist only as DirectShow devices; ffmpeg's dshow
+    // listing reaches them. Run it from inside the helper so one trusted process
+    // (already allowed by security software) performs every enumeration.
+    if (! ffmpeg.empty())
+    {
+        const auto output = runCommandCapture(ffmpeg + L" -hide_banner -f dshow -list_devices true -i dummy");
+        std::istringstream lines(output);
+        std::string line;
+        while (std::getline(lines, line))
+        {
+            if (line.find("Alternative name") != std::string::npos) continue;
+            if (line.find("(audio)") != std::string::npos) continue;
+            const auto openQuote = line.find('\"');
+            if (openQuote == std::string::npos) continue;
+            const auto closeQuote = line.find('\"', openQuote + 1);
+            if (closeQuote == std::string::npos) continue;
+            auto name = line.substr(openQuote + 1, closeQuote - openQuote - 1);
+            if (name.empty()) continue;
+            auto lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lower.find("audio") != std::string::npos || lower.find("microphone") != std::string::npos) continue;
+            const auto cleaned = cleanField(name);
+            bool duplicate = false;
+            for (const auto& existing : listedNames)
+                if (existing == cleaned) { duplicate = true; break; }
+            if (duplicate) continue;
+            std::cout << "SONOBUS_CAMERA\tdshow:" << cleaned << '\t' << cleaned << '\n';
+            listedNames.push_back(cleaned);
+        }
     }
     return 0;
 }
@@ -715,7 +786,7 @@ int wmain(int argc, wchar_t** argv)
         // delivered through that apartment and are pumped in the publish loop.
         init_apartment(apartment_type::single_threaded);
         std::vector<std::wstring> args(argv + 1, argv + argc);
-        if (std::find(args.begin(), args.end(), L"--list") != args.end()) return listCameras();
+        if (std::find(args.begin(), args.end(), L"--list") != args.end()) return listCameras(args);
         if (std::find(args.begin(), args.end(), L"--modes") != args.end())
         {
             const auto device = option(args, L"--device");

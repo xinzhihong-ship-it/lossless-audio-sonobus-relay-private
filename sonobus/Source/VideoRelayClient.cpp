@@ -683,13 +683,15 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
         return result;
     }
     juce::ChildProcess probe;
-    if (! probe.start({ helper, "--list" }, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    // --ffmpeg lets the helper itself enumerate DirectShow devices (physical UVC cameras
+    // plus virtual cameras from OBS/YY) inside one trusted, already-allowed process.
+    if (! probe.start({ helper, "--list", "--ffmpeg", ffmpegPath }, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
     {
         error = sonobus::video::translated(u8"无法启动 Windows 共享摄像头枚举");
         return result;
     }
     juce::String output;
-    if (! runProbe(probe, 10000, output))
+    if (! runProbe(probe, 15000, output))
         error = sonobus::video::translated(u8"Windows 共享摄像头枚举超时");
     for (const auto& device : sonobus::video::parseWindowsCameraDevices(output))
         result.add({ device.id, device.name });
@@ -697,40 +699,6 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
     {
         const auto failure = cameraFailureMessage(output);
         error = failure.isNotEmpty() ? failure : sonobus::video::translated(u8"未检测到摄像头");
-    }
-    // DirectShow devices: physical UVC cameras again, plus virtual cameras from OBS, YY etc.
-    // that MediaFoundation never exposes. Virtual cameras can only be captured via DirectShow.
-    {
-        juce::ChildProcess dshow;
-        if (dshow.start({ ffmpegPath, "-hide_banner", "-f", "dshow", "-list_devices", "true", "-i", "dummy" },
-                        juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
-        {
-            juce::String dshowOutput;
-            if (runProbe(dshow, 10000, dshowOutput))
-            {
-                // ffmpeg 7.x prints device lines without a section header, e.g.
-                //   [dshow @ ...] "YY开播" (video)
-                //   [dshow @ ...]   Alternative name "@device_sw_..."
-                for (const auto& line : juce::StringArray::fromLines(dshowOutput))
-                {
-                    if (line.contains("Alternative name")) continue;
-                    if (line.contains("(audio)")) continue;
-                    const auto openQuote = line.indexOfChar('"');
-                    if (openQuote < 0) continue;
-                    const auto closeQuote = line.indexOfChar('"', openQuote + 1);
-                    if (closeQuote < 0) continue;
-                    const auto name = line.substring(openQuote + 1, closeQuote).trim();
-                    if (name.isEmpty()) continue;
-                    if (name.containsIgnoreCase("audio") || name.containsIgnoreCase("microphone")) continue;
-                    // Skip names already listed by the MediaFoundation helper.
-                    bool alreadyListed = false;
-                    for (const auto& existing : result)
-                        if (existing.name == name) { alreadyListed = true; break; }
-                    if (! alreadyListed)
-                        result.add({ "dshow:" + name, name });
-                }
-            }
-        }
     }
 #elif JUCE_MAC
     const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", "" };
