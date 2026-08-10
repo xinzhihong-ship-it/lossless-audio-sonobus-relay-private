@@ -136,7 +136,7 @@ bool isPreferredMode(const Mode& candidate, const Mode& current)
 }
 
 CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth = 0, uint32_t requestedHeight = 0,
-                                double requestedFps = 0.0, bool shared = true)
+                                double requestedFps = 0.0)
 {
     const auto group = findGroup(deviceId);
     if (!group) throw hresult_error(HRESULT_FROM_WIN32(ERROR_NOT_FOUND), L"The selected camera source group is unavailable.");
@@ -144,8 +144,8 @@ CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth
     MediaCaptureInitializationSettings settings;
     settings.SourceGroup(group);
     settings.StreamingCaptureMode(StreamingCaptureMode::Video);
-    settings.SharingMode(shared ? MediaCaptureSharingMode::SharedReadOnly
-                             : static_cast<MediaCaptureSharingMode>(0));  // 0 == Exclusive
+    // SharedReadOnly keeps the camera transparent for every other app using it.
+    settings.SharingMode(MediaCaptureSharingMode::SharedReadOnly);
     settings.MemoryPreference(MediaCaptureMemoryPreference::Cpu);
 
     CaptureSession session;
@@ -204,9 +204,9 @@ void emitError(HRESULT code, const std::string& stage = {})
     std::cout << ":0x" << std::hex << static_cast<uint32_t>(code) << std::dec << std::endl;
 }
 
-CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t height, double fps, bool shared)
+CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t height, double fps)
 {
-    auto session = openSharedCamera(deviceId, width, height, fps, shared);
+    auto session = openSharedCamera(deviceId, width, height, fps);
     session.state = std::make_shared<FrameState>();
     session.failedToken = session.capture.Failed([state = session.state](const MediaCapture&, const MediaCaptureFailedEventArgs& args)
     {
@@ -535,28 +535,10 @@ int publish(const std::vector<std::wstring>& args)
     if (parentPid != 0)
         parentHandle = OpenProcess(SYNCHRONIZE, FALSE, parentPid);
 
-    // SharedReadOnly only delivers frames while another app is actively using the camera, so
-    // try exclusive first (works when the camera is idle, the common case) and fall back to
-    // shared read-only when another app already owns the device.
-    CaptureSession camera;
-    bool shared = false;
-    try
-    {
-        camera = startReader(hstring(device), width, height, fps, false);
-    }
-    catch (const hresult_error& error)
-    {
-        const auto code = error.code();
-        const auto busy = code == E_ACCESSDENIED || code == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
-                       || code == HRESULT_FROM_WIN32(ERROR_BUSY) || code == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED;
-        if (! busy) throw;
-        camera = startReader(hstring(device), width, height, fps, true);
-        shared = true;
-    }
+    auto camera = startReader(hstring(device), width, height, fps);
     auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height, camera.mode.fps,
                              maxHeight, maxFps, maxBitrate);
-    std::cout << "capture_mode=" << (shared ? "shared" : "exclusive") << '\n'
-              << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height
+    std::cout << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height
               << "\ncapture_nominal_fps=" << camera.mode.fps << "\n" << std::flush;
 
     uint64_t lastSequence = 0;
@@ -568,7 +550,10 @@ int publish(const std::vector<std::wstring>& args)
         std::vector<uint8_t> frame;
         {
             std::unique_lock lock(camera.state->mutex);
-            camera.state->changed.wait_for(lock, std::chrono::seconds(5), [&]
+            // Camera warm-up (especially under antivirus scanning) can take a long time, so the
+            // first frame may arrive late. Only tighten the timeout once frames are flowing.
+            const auto waitSeconds = lastSequence == 0 ? 30 : 5;
+            camera.state->changed.wait_for(lock, std::chrono::seconds(waitSeconds), [&]
             {
                 return camera.state->failed || camera.state->sequence != lastSequence;
             });

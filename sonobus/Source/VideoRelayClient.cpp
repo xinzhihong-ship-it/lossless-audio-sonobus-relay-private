@@ -1138,7 +1138,7 @@ juce::StringArray VideoRelayClient::publisherArguments(const juce::String& ffmpe
                                          "--ffmpeg", ffmpegPath, "--max-height", juce::String(desired.maxHeight),
                                          "--max-fps", juce::String(desired.maxFps, 3), "--max-bitrate",
                                          juce::String(desired.maxBitrate), "--parent-pid",
-                                         juce::String(juce::Process::getCurrentProcessID()), "--" };
+                                         juce::String(static_cast<juce::int64>(GetCurrentProcessId())), "--" };
     arguments.addArray({ "-an", "-vf", "@SONOBUS_FILTER@", "-fps_mode", "passthrough", "-c:v", encoder });
     arguments.addArray(encoderArguments(encoder));
     arguments.addArray({ "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-bf", "0", "-g", "@SONOBUS_GOP@",
