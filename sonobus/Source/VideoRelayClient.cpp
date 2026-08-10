@@ -939,10 +939,21 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
 #endif
         auto process = std::make_unique<juce::ChildProcess>();
         const auto arguments = publisherArguments(ffmpegPath, desired.cameraDeviceId, mode, encoder, desired);
-        if (! process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) continue;
+        if (! process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            if (launchErrors.isEmpty())
+                launchErrors = sonobus::video::translated(u8"无法启动摄像头采集进程");
+            continue;
+        }
         if (process->waitForProcessToFinish(1500))
         {
-            launchErrors = cameraFailureMessage(process->readAllProcessOutput());
+            const auto detail = process->readAllProcessOutput();
+            launchErrors = cameraFailureMessage(detail);
+            if (launchErrors.isEmpty()) launchErrors = sonobus::video::lastOutputLine(detail);
+            if (launchErrors.isEmpty())
+                launchErrors = sonobus::video::translated(u8"摄像头采集进程启动后立即退出（退出码 ")
+                             + juce::String(process->getExitCode())
+                             + sonobus::video::translated(u8"）");
             continue;
         }
         if (threadShouldExit())
