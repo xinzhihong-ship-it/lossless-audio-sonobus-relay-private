@@ -526,7 +526,6 @@ int publish(const std::vector<std::wstring>& args)
                 emitError(camera.state->failureCode, camera.state->failureStage);
                 return 3;
             }
-            }
             if (camera.state->sequence == lastSequence)
             {
                 std::cout << "SONOBUS_ERROR=unavailable:frame-timeout" << std::endl;
