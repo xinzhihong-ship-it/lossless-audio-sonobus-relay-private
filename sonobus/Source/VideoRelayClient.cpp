@@ -974,6 +974,69 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         lastError = launchErrors.isNotEmpty() ? launchErrors
             : sonobus::video::translated(u8"没有可用的 H.264 编码器或编码硬件");
     }
+#if JUCE_WINDOWS
+    // Last resort: some USB cameras cannot initialise MediaCapture/FrameReader at all
+    // (both exclusive and shared attempts fail with E_FAIL). DirectShow works for every UVC
+    // camera, so fall back to ffmpeg dshow capture with libx264.
+    {
+        juce::String dshowName;
+        for (const auto& device : devices)
+            if (device.id == desired.cameraDeviceId) dshowName = device.name;
+        if (dshowName.isNotEmpty())
+        {
+            auto process = std::make_unique<juce::ChildProcess>();
+            auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin",
+                                                 "-f", "dshow", "-i", dshowName };
+            arguments.add("-an");
+            arguments.addArray({ "-fps_mode", "passthrough", "-c:v", "libx264" });
+            arguments.addArray(encoderArguments("libx264"));
+            const auto automaticBitrate = bitrateFor(mode.width, mode.height);
+            const auto bitrate = desired.maxBitrate > 0 ? juce::jmin(desired.maxBitrate, automaticBitrate) : automaticBitrate;
+            const auto gop = juce::jmax(1, juce::roundToInt(mode.fps));
+            arguments.addArray({ "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-bf", "0", "-g", juce::String(gop),
+                                 "-b:v", juce::String(bitrate), "-maxrate", juce::String(bitrate),
+                                 "-bufsize", juce::String(bitrate / 2), "-progress", "pipe:1", "-nostats" });
+            juce::String localHost, localPairingId;
+            juce::MemoryBlock localKey;
+            {
+                const juce::ScopedLock lock(stateLock);
+                localHost = host;
+                localPairingId = pairingId;
+                localKey = pairingKey;
+            }
+            const auto password = hmacSha256Base64Url(localKey, "publish\n" + localPairingId + "\n" + desired.publishNonce);
+            auto safePathParts = juce::StringArray::fromTokens(desired.ingestPath, "/", "");
+            for (auto& part : safePathParts) part = percentEncode(part);
+            const auto url = "rtsp://" + percentEncode(desired.publishUser) + ":" + percentEncode(password) + "@"
+                           + formatHost(localHost) + ":" + juce::String(desired.rtspPort) + "/" + safePathParts.joinIntoString("/");
+            arguments.addArray({ "-muxdelay", "0", "-flush_packets", "1", "-f", "rtsp", "-rtsp_transport", "tcp", url });
+            if (process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)
+                && ! process->waitForProcessToFinish(1500))
+            {
+                auto cameraName = dshowName;
+                {
+                    const juce::ScopedLock lock(stateLock);
+                    publisher = std::move(process);
+                    activeCameraId = desired.cameraDeviceId;
+                    activeCamera = cameraName;
+                    activeEncoder = "libx264";
+                    captureMode = {};
+                    activeMaxHeight = desired.maxHeight;
+                    activeMaxFps = desired.maxFps;
+                    activeMaxBitrate = desired.maxBitrate;
+                    activeMode = outputMode;
+                    captureFps = 0.0;
+                    actualFps = 0.0;
+                    actualBitrate = 0;
+                    progressBuffer.clear();
+                    lastError.clear();
+                }
+                return true;
+            }
+            launchErrors = cameraFailureMessage(process->readAllProcessOutput());
+        }
+    }
+#endif
     return false;
 }
 

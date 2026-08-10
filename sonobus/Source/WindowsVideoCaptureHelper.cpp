@@ -608,7 +608,7 @@ int publish(const std::vector<std::wstring>& args)
         {
             std::cout << "SONOBUS_ERROR=unavailable:shared:0x" << std::hex << static_cast<uint32_t>(sharedError.code())
                       << std::dec << std::endl;
-            throw;
+            return 3;  // avoid rethrow: wmain would print a bare error that overwrites this one
         }
         shared = true;
     }
