@@ -874,7 +874,7 @@ bool VideoRelayClient::probeEncoder(const juce::String& ffmpegPath,
     juce::ChildProcess probe;
     if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) return false;
     juce::String output;
-    const auto finished = runProbe(probe, 5000, output);
+    const auto finished = runProbe(probe, 2000, output);
     if (! finished)
     {
         error = sonobus::video::translated(u8"H.264 编码器探测超时");
@@ -914,10 +914,13 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     const juce::StringArray preferred { "libx264" };
 #endif
     juce::String launchErrors;
+    int probedEncoders = 0;
     for (const auto& encoder : preferred)
     {
         if (threadShouldExit()) break;
         if (! encoders.contains(encoder)) continue;
+        // Probe at most two encoders so a slow/hooked ffmpeg cannot stall the control loop for tens of seconds.
+        if (++probedEncoders > 2) break;
         juce::String probeError;
         if (! probeEncoder(ffmpegPath, desired.cameraDeviceId, encoderProbeMode, encoder, probeError))
         {
