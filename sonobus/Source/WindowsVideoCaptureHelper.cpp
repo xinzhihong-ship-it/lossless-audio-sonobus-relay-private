@@ -144,7 +144,8 @@ CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth
     MediaCaptureInitializationSettings settings;
     settings.SourceGroup(group);
     settings.StreamingCaptureMode(StreamingCaptureMode::Video);
-    settings.SharingMode(shared ? MediaCaptureSharingMode::SharedReadOnly : MediaCaptureSharingMode::Exclusive);
+    settings.SharingMode(shared ? MediaCaptureSharingMode::SharedReadOnly
+                             : static_cast<MediaCaptureSharingMode>(0));  // 0 == Exclusive
     settings.MemoryPreference(MediaCaptureMemoryPreference::Cpu);
 
     CaptureSession session;
