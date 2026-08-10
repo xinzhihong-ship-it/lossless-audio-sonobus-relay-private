@@ -428,6 +428,7 @@ void VideoRelayClient::runVideoLoop()
                     }
                 }
                 readPublisherProgress();
+                logMsg("post-publisher read done");
                 {
                     const juce::ScopedLock lock(stateLock);
                     const auto minimumFps = juce::jmax(1.0, captureMode.fps - 1.0);
@@ -437,13 +438,15 @@ void VideoRelayClient::runVideoLoop()
         }
 
         const auto sleepMs = juce::jlimit(250, 5000, pollAfterMs);
+        logMsg("sleep begin ms=" + juce::String(sleepMs));
         for (int waited = 0; waited < sleepMs && ! threadShouldExit(); waited += 100)
         {
             readPublisherProgress();
             wait(juce::jmin(100, sleepMs - waited));
         }
+        logMsg("sleep done");
     }
-    stopPublisher();
+        stopPublisher();
     }
     catch (const std::exception& e)
     {
