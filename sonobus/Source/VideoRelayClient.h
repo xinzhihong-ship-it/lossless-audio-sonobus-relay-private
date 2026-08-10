@@ -99,9 +99,6 @@ private:
     void readPublisherProgress();
     void logMsg(const juce::String& msg);
     void runVideoLoop();
-#if JUCE_WINDOWS
-    int logException(unsigned code, void* info);
-#endif
     juce::String findFfmpeg() const;
     juce::String findWindowsCaptureHelper() const;
     juce::StringArray availableEncoders(const juce::String& ffmpegPath) const;

@@ -211,18 +211,7 @@ void VideoRelayClient::run()
     setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"此平台构建不支持摄像头"));
     while (! threadShouldExit()) wait(500);
 #else
-#if JUCE_WINDOWS
-    __try
-    {
-        runVideoLoop();
-    }
-    __except (logException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER)
-    {
-        logMsg("SEH terminated run");
-    }
-#else
     runVideoLoop();
-#endif
 #endif
 }
 
@@ -469,17 +458,6 @@ void VideoRelayClient::logMsg(const juce::String& msg)
 {
     if (relayLog != nullptr) relayLog->logMessage(msg);
 }
-
-#if JUCE_WINDOWS
-int VideoRelayClient::logException(unsigned code, void* infoPtr)
-{
-    auto* info = static_cast<_EXCEPTION_POINTERS*>(infoPtr);
-    juce::String detail = "SEH code=0x" + juce::String::toHexString((int) code)
-        + (info && info->ExceptionRecord ? " addr=0x" + juce::String::toHexString((int) (intptr_t) info->ExceptionRecord->ExceptionAddress) : "");
-    logMsg("SEH exception: " + detail);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-#endif
 
 
 bool VideoRelayClient::requestEnrollment(int& pollAfterMs)
