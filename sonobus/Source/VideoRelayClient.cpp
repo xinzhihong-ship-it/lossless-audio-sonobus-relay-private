@@ -180,7 +180,7 @@ void VideoRelayClient::stop()
 {
     signalThreadShouldExit();
     stopPublisher();
-    stopThread(15000);
+    stopThread(5000);
     {
         const juce::ScopedLock lock(stateLock);
         cameras.clear();
@@ -903,6 +903,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     const auto encoders = availableEncoders(ffmpegPath);
 #if JUCE_WINDOWS
     const auto encoderProbeMode = outputMode;
+    juce::ignoreUnused(encoderProbeMode);
 #else
     const auto encoderProbeMode = mode;
 #endif
@@ -914,19 +915,22 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     const juce::StringArray preferred { "libx264" };
 #endif
     juce::String launchErrors;
-    int probedEncoders = 0;
     for (const auto& encoder : preferred)
     {
         if (threadShouldExit()) break;
         if (! encoders.contains(encoder)) continue;
-        // Probe at most two encoders so a slow/hooked ffmpeg cannot stall the control loop for tens of seconds.
-        if (++probedEncoders > 2) break;
+#if JUCE_WINDOWS
+        // Skip synthetic lavfi probes on Windows: antivirus startup scans can blow a 2s budget,
+        // stalling the control loop (client looks offline). The 1.5s publisher startup check
+        // below already falls through to the next encoder on failure; libx264 is built-in.
+#else
         juce::String probeError;
         if (! probeEncoder(ffmpegPath, desired.cameraDeviceId, encoderProbeMode, encoder, probeError))
         {
             if (launchErrors.isEmpty()) launchErrors = probeError;
             continue;
         }
+#endif
         auto process = std::make_unique<juce::ChildProcess>();
         const auto arguments = publisherArguments(ffmpegPath, desired.cameraDeviceId, mode, encoder, desired);
         if (! process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) continue;
