@@ -520,6 +520,7 @@ test("browser LPCM frames from non-bridge web rooms are not forwarded to the Son
 
 test("native bridge PCM frames are broadcast into the matching web room", async () => {
   let frameDelivered = false;
+  let frameReady = false;
   const nativePayload = Buffer.from([9, 0, 0, 8, 0, 0, 7, 0, 0, 6, 0, 0]);
   const bridgeServer = http.createServer((req, res) => {
     if (req.url === "/status") {
@@ -534,7 +535,7 @@ test("native bridge PCM frames are broadcast into the matching web room", async 
       return;
     }
     if (req.method === "GET" && req.url === "/audio/pcm") {
-      const frames = frameDelivered
+      const frames = !frameReady || frameDelivered
         ? []
         : [{
             group: "web-band",
@@ -548,7 +549,7 @@ test("native bridge PCM frames are broadcast into the matching web room", async 
             timestamp: Date.now(),
             payload: nativePayload.toString("base64")
           }];
-      frameDelivered = true;
+      if (frames.length > 0) frameDelivered = true;
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ frames }));
       return;
@@ -577,6 +578,7 @@ test("native bridge PCM frames are broadcast into the matching web room", async 
     const join = await postJson<{ token: string; streamUrl: string }>(baseUrl, "/web/join", { roomName: "web-band", username: "alice-web" });
     const alice = new WebSocket(`${baseUrl.replace("http", "ws")}${join.streamUrl}?token=${join.token}`);
     await once(alice, "open");
+    frameReady = true;
 
     const received = decodeAudioFrame(await onceBinaryMessage(alice));
     assert.equal(received.header.userId, "sonobus-native-peer");
@@ -1806,12 +1808,17 @@ async function eventually(assertion: () => void | Promise<void>, timeoutMs = 100
 
 async function onceBinaryMessage(ws: WebSocket): Promise<Buffer> {
   return await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("timed out waiting for binary WebSocket message")), 2000);
     ws.on("message", (data, isBinary) => {
       if (isBinary) {
+        clearTimeout(timeout);
         resolve(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
       }
     });
-    ws.on("error", reject);
+    ws.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
   });
 }
 
