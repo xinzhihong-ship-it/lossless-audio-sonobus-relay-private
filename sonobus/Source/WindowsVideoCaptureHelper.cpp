@@ -541,6 +541,17 @@ int listModes(const hstring& deviceId)
     }
     return 0;
 }
+void pumpStaCallbacks()
+{
+    MSG message {};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+    {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    DWORD result = 0;
+    CoWaitForMultipleHandles(COWAIT_DISPATCH_CALLS | COWAIT_DISPATCH_WINDOW_MESSAGES, 10, 0, nullptr, &result);
+}
 
 int publish(const std::vector<std::wstring>& args)
 {
@@ -598,14 +609,18 @@ int publish(const std::vector<std::wstring>& args)
         if (parentHandle != nullptr && WaitForSingleObject(parentHandle, 0) == WAIT_OBJECT_0) break;
         std::vector<uint8_t> frame;
         {
-            std::unique_lock lock(camera.state->mutex);
-            // Camera warm-up (especially under antivirus scanning) can take a long time, so the
-            // first frame may arrive late. Only tighten the timeout once frames are flowing.
+            // MediaCapture was initialized on an STA thread (required by Windows), so its
+            // FrameArrived callbacks arrive via COM/window messages and must be pumped while
+            // we wait; a plain condition-variable wait would starve them.
             const auto waitSeconds = lastSequence == 0 ? 30 : 5;
-            camera.state->changed.wait_for(lock, std::chrono::seconds(waitSeconds), [&]
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(waitSeconds);
+            for (;;)
             {
-                return camera.state->failed || camera.state->sequence != lastSequence;
-            });
+                pumpStaCallbacks();
+                std::lock_guard lock(camera.state->mutex);
+                if (camera.state->failed || camera.state->sequence != lastSequence) break;
+                if (std::chrono::steady_clock::now() >= deadline) break;
+            }
             if (camera.state->failed)
             {
                 emitError(camera.state->failureCode, camera.state->failureStage);
@@ -677,7 +692,9 @@ int wmain(int argc, wchar_t** argv)
 {
     try
     {
-        init_apartment(apartment_type::multi_threaded);
+        // MediaCapture.InitializeAsync must run on an STA thread; FrameArrived callbacks are
+        // delivered through that apartment and are pumped in the publish loop.
+        init_apartment(apartment_type::single_threaded);
         std::vector<std::wstring> args(argv + 1, argv + argc);
         if (std::find(args.begin(), args.end(), L"--list") != args.end()) return listCameras();
         if (std::find(args.begin(), args.end(), L"--modes") != args.end())

@@ -1040,6 +1040,8 @@ void VideoRelayClient::readPublisherProgress()
             if (value.isNotEmpty()) actualBitrate = juce::roundToInt(value.getDoubleValue() * 1000.0);
         }
         if (line.startsWith("SONOBUS_ERROR=")) lastError = cameraFailureMessage(line);
+        else if (line.startsWith("source_candidate=") || line.startsWith("capture_source="))
+            lastError = line;  // keep camera-source diagnostics visible in the admin UI
         else if (! line.containsChar('=') && line.isNotEmpty()) lastError = line.substring(0, 500);
     }
     if (captureMode.isValid())
