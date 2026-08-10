@@ -16,6 +16,7 @@
 #include <winrt/Windows.Media.Capture.h>
 #include <winrt/Windows.Media.Capture.Frames.h>
 #include <winrt/Windows.Media.MediaProperties.h>
+#include <winrt/Windows.Storage.Streams.h>
 
 #include <algorithm>
 #include <cmath>
@@ -36,11 +37,8 @@ using namespace Windows::Graphics::Imaging;
 using namespace Windows::Media::Capture;
 using namespace Windows::Media::Capture::Frames;
 using namespace Windows::Media::MediaProperties;
+using namespace Windows::Storage::Streams;
 
-struct __declspec(uuid("5B0D3235-4DBA-4D44-8654-1D7689D2E1F0")) IMemoryBufferByteAccess : ::IUnknown
-{
-    virtual HRESULT __stdcall GetBuffer(uint8_t** value, uint32_t* capacity) = 0;
-};
 
 namespace
 {
@@ -60,6 +58,7 @@ struct FrameState
     uint64_t sequence = 0;
     bool failed = false;
     HRESULT failureCode = S_OK;
+    std::string failureStage;
 };
 
 struct CaptureSession
@@ -178,40 +177,28 @@ bool copyNv12(const SoftwareBitmap& input, std::vector<uint8_t>& output)
         bitmap = SoftwareBitmap::Convert(bitmap, BitmapPixelFormat::Nv12);
     if (!bitmap || bitmap.BitmapPixelFormat() != BitmapPixelFormat::Nv12) return false;
 
-    auto buffer = bitmap.LockBuffer(BitmapBufferAccessMode::Read);
-    auto reference = buffer.CreateReference();
-    auto access = reference.as<IMemoryBufferByteAccess>();
-    uint8_t* bytes = nullptr;
-    uint32_t capacity = 0;
-    check_hresult(access->GetBuffer(&bytes, &capacity));
-    if (!bytes || buffer.GetPlaneCount() < 2) return false;
-
     const auto width = static_cast<size_t>(bitmap.PixelWidth());
     const auto height = static_cast<size_t>(bitmap.PixelHeight());
-    output.resize(width * height * 3 / 2);
-    size_t destination = 0;
-    for (uint32_t planeIndex = 0; planeIndex < 2; ++planeIndex)
-    {
-        const auto plane = buffer.GetPlaneDescription(planeIndex);
-        const auto rows = planeIndex == 0 ? height : height / 2;
-        for (size_t row = 0; row < rows; ++row)
-        {
-            const auto sourceIndex = static_cast<size_t>(plane.StartIndex) + row * static_cast<size_t>(plane.Stride);
-            if (sourceIndex + width > capacity || destination + width > output.size()) return false;
-            std::copy_n(bytes + sourceIndex, width, output.data() + destination);
-            destination += width;
-        }
-    }
-    return destination == output.size();
+    const auto size = width * height * 3 / 2;
+    if (!width || !height || size > UINT32_MAX) return false;
+    Buffer raw(static_cast<uint32_t>(size));
+    raw.Length(static_cast<uint32_t>(size));
+    bitmap.CopyToBuffer(raw);
+    output.resize(size);
+    auto reader = DataReader::FromBuffer(raw);
+    reader.ReadBytes(winrt::array_view<uint8_t>(output));
+    return true;
 }
 
-void emitError(HRESULT code)
+void emitError(HRESULT code, const std::string& stage = {})
 {
     std::string category = "unavailable";
     if (code == E_ACCESSDENIED || code == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)) category = "permission";
     else if (code == HRESULT_FROM_WIN32(ERROR_BUSY) || code == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
              || code == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED) category = "busy";
-    std::cout << "SONOBUS_ERROR=" << category << ":0x" << std::hex << static_cast<uint32_t>(code) << std::dec << std::endl;
+    std::cout << "SONOBUS_ERROR=" << category;
+    if (!stage.empty()) std::cout << ":" << stage;
+    std::cout << ":0x" << std::hex << static_cast<uint32_t>(code) << std::dec << std::endl;
 }
 
 CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t height, double fps)
@@ -223,6 +210,7 @@ CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t hei
         std::lock_guard lock(state->mutex);
         state->failed = true;
         state->failureCode = args.Code();
+        state->failureStage = "capture";
         state->changed.notify_all();
     });
 
@@ -244,7 +232,15 @@ CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t hei
             const auto video = frame.VideoMediaFrame();
             if (!video) return;
             std::vector<uint8_t> pixels;
-            if (!copyNv12(video.SoftwareBitmap(), pixels)) return;
+            if (!copyNv12(video.SoftwareBitmap(), pixels))
+            {
+                std::lock_guard lock(state->mutex);
+                state->failed = true;
+                state->failureCode = E_FAIL;
+                state->failureStage = "frame-copy";
+                state->changed.notify_all();
+                return;
+            }
             {
                 std::lock_guard lock(state->mutex);
                 state->frame = std::move(pixels);
@@ -257,6 +253,7 @@ CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t hei
             std::lock_guard lock(state->mutex);
             state->failed = true;
             state->failureCode = error.code();
+            state->failureStage = "frame";
             state->changed.notify_all();
         }
     });
@@ -526,8 +523,9 @@ int publish(const std::vector<std::wstring>& args)
             });
             if (camera.state->failed)
             {
-                emitError(camera.state->failureCode);
+                emitError(camera.state->failureCode, camera.state->failureStage);
                 return 3;
+            }
             }
             if (camera.state->sequence == lastSequence)
             {
