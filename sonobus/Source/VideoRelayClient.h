@@ -97,6 +97,7 @@ private:
                         CameraMode mode);
     void stopPublisher();
     void readPublisherProgress();
+    void logMsg(const juce::String& msg);
     juce::String findFfmpeg() const;
     juce::String findWindowsCaptureHelper() const;
     juce::StringArray availableEncoders(const juce::String& ffmpegPath) const;
@@ -119,6 +120,7 @@ private:
     static bool secureEquals(const juce::String& left, const juce::String& right);
 
     mutable juce::CriticalSection stateLock;
+    std::unique_ptr<juce::FileLogger> relayLog;
     juce::String host;
     juce::String group;
     juce::String user;

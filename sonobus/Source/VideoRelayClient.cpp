@@ -173,6 +173,10 @@ void VideoRelayClient::start(const juce::String& host_,
         return;
     }
     setStatus(pairingId.isNotEmpty() && pairingKey.getSize() == 32 ? Status::connecting : Status::awaitingAuthorization);
+    relayLog = std::make_unique<juce::FileLogger>
+        (juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("SonoBusVideoRelay.log"),
+         "SonoBus video relay", 0);
+    logMsg("start host=" + host + " group=" + group + " user=" + user);
     startThread();
 }
 
@@ -207,7 +211,10 @@ void VideoRelayClient::run()
     setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"此平台构建不支持摄像头"));
     while (! threadShouldExit()) wait(500);
 #else
+    try
+    {
     const auto ffmpegPath = findFfmpeg();
+    logMsg("ffmpeg=" + (ffmpegPath.isEmpty() ? juce::String("MISSING") : ffmpegPath));
     if (ffmpegPath.isEmpty())
         setStatus(Status::error, sonobus::video::translated(u8"安装包中缺少 FFmpeg 视频运行时"));
 
@@ -246,8 +253,10 @@ void VideoRelayClient::run()
 
         DesiredState desired;
         int pollAfterMs = pollFallbackMs;
+        logMsg("poll start");
         if (! pollControl(desired, pollAfterMs))
         {
+            logMsg("poll FAILED: " + lastError);
             stopPublisher();
             bool enrollAgain = false;
             {
@@ -270,7 +279,7 @@ void VideoRelayClient::run()
             wait(juce::jlimit(500, 5000, pollAfterMs));
             continue;
         }
-
+        logMsg("poll ok enabled=" + juce::String(desired.enabled ? "1" : "0") + " camera=" + desired.cameraDeviceId);
         if (ffmpegPath.isEmpty())
         {
             stopPublisher();
@@ -429,7 +438,20 @@ void VideoRelayClient::run()
         }
     }
     stopPublisher();
+    }
+    catch (const std::exception& e)
+    {
+        logMsg("CRASH std::exception: " + juce::String(e.what()));
+    }
+    catch (...)
+    {
+        logMsg("CRASH unknown exception");
+    }
 #endif
+}
+void VideoRelayClient::logMsg(const juce::String& msg)
+{
+    if (relayLog != nullptr) relayLog->logMessage(msg);
 }
 
 bool VideoRelayClient::requestEnrollment(int& pollAfterMs)
