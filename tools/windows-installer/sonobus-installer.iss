@@ -48,6 +48,16 @@ Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{ap
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-RUNTIME.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBus.vst3\*"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusInstrument.vst3\*"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
+// VST3 plugins look for the capture helper and ffmpeg next to the plugin binary, so ship
+// them inside every plugin bundle as well.
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3"; Components: vst3; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\SonoBus"; Filename: "{app}\SonoBus.exe"
