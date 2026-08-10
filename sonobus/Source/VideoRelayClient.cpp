@@ -986,15 +986,6 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         }
         return true;
     }
-    {
-        const juce::ScopedLock lock(stateLock);
-        if (launchErrors.isEmpty() && dshowOnly)
-            launchErrors = sonobus::video::translated(u8"DirectShow 采集启动失败");
-        if (launchErrors.isEmpty() && encoders.isEmpty())
-            launchErrors = sonobus::video::translated(u8"FFmpeg 未检测到 H.264 编码器：") + ffmpegPath;
-        lastError = launchErrors.isNotEmpty() ? launchErrors
-            : sonobus::video::translated(u8"视频采集启动失败");
-    }
 #if JUCE_WINDOWS
     // Last resort: some USB cameras cannot initialise MediaCapture/FrameReader at all
     // (both exclusive and shared attempts fail with E_FAIL). DirectShow works for every UVC
@@ -1062,6 +1053,15 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         }
     }
 #endif
+    {
+        const juce::ScopedLock lock(stateLock);
+        if (launchErrors.isEmpty() && dshowOnly)
+            launchErrors = sonobus::video::translated(u8"DirectShow 采集启动失败");
+        if (launchErrors.isEmpty() && encoders.isEmpty())
+            launchErrors = sonobus::video::translated(u8"FFmpeg 未检测到 H.264 编码器：") + ffmpegPath;
+        lastError = launchErrors.isNotEmpty() ? launchErrors
+            : sonobus::video::translated(u8"视频采集启动失败");
+    }
     return false;
 }
 
