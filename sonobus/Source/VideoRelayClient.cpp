@@ -6,6 +6,8 @@
 #include <iterator>
 #include <algorithm>
 #include <regex>
+#include <atomic>
+#include <thread>
 
 #if JUCE_MAC
  #include <dlfcn.h>
@@ -1033,12 +1035,22 @@ juce::StringArray VideoRelayClient::availableEncoders(const juce::String& ffmpeg
     juce::ChildProcess probe;
     if (! probe.start({ ffmpegPath, "-hide_banner", "-encoders" }, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         return {};
-    if (! probe.waitForProcessToFinish(5000))
+
+    juce::String output;
+    std::atomic<bool> outputReady { false };
+    std::thread reader([&]
     {
-        probe.kill();
-        return {};
-    }
-    const auto output = probe.readAllProcessOutput();
+        output = probe.readAllProcessOutput();
+        outputReady.store(true);
+    });
+
+    const auto deadline = juce::Time::getMillisecondCounter() + 5000;
+    while (! outputReady.load() && juce::Time::getMillisecondCounter() < deadline)
+        juce::Thread::sleep(2);
+    if (! outputReady.load()) probe.kill();
+    reader.join();
+    if (! outputReady.load()) return {};
+
     juce::StringArray result;
     for (const auto& name : { "h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264" })
         if (output.containsWholeWord(name)) result.add(name);
