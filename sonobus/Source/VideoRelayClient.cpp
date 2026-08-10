@@ -832,7 +832,8 @@ bool VideoRelayClient::probeEncoder(const juce::String& ffmpegPath,
     arguments.addArray(captureArguments(cameraDeviceId, mode));
 #endif
     const auto gop = juce::jmax(1, juce::roundToInt(mode.fps));
-    arguments.addArray({ "-frames:v", "30", "-an", "-fps_mode", "passthrough", "-c:v", encoder });
+    // One synthetic frame validates encoder setup; 30 high-resolution frames can time out on software H.264.
+    arguments.addArray({ "-frames:v", "1", "-an", "-fps_mode", "passthrough", "-c:v", encoder });
     arguments.addArray(encoderArguments(encoder));
     arguments.addArray({ "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-bf", "0",
                          "-g", juce::String(gop), "-f", "null", "-" });
@@ -847,6 +848,8 @@ bool VideoRelayClient::probeEncoder(const juce::String& ffmpegPath,
     const auto output = probe.readAllProcessOutput();
     if (! threadShouldExit() && probe.getExitCode() == 0) return true;
     error = cameraFailureMessage(output);
+    if (error.isEmpty()) error = sonobus::video::lastOutputLine(output);
+    if (error.isEmpty()) error = sonobus::video::translated(u8"H.264 编码器探测失败");
     return false;
 }
 
