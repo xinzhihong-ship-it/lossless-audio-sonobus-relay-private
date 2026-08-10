@@ -58,6 +58,8 @@ struct FrameState
     uint64_t sequence = 0;
     bool failed = false;
     HRESULT failureCode = S_OK;
+    uint64_t frameArrivals = 0;
+    uint64_t emptyFrames = 0;
     std::string failureStage;
 };
 
@@ -216,11 +218,11 @@ CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t hei
 
     try
     {
-        session.reader = session.capture.CreateFrameReaderAsync(session.source, MediaEncodingSubtypes::Nv12()).get();
+        session.reader = session.capture.CreateFrameReaderAsync(session.source, MediaEncodingSubtypes::Bgra8()).get();
     }
     catch (const hresult_error&)
     {
-        session.reader = session.capture.CreateFrameReaderAsync(session.source, MediaEncodingSubtypes::Bgra8()).get();
+        session.reader = session.capture.CreateFrameReaderAsync(session.source, MediaEncodingSubtypes::Nv12()).get();
     }
     session.reader.AcquisitionMode(MediaFrameReaderAcquisitionMode::Realtime);
     session.frameToken = session.reader.FrameArrived([state = session.state](const MediaFrameReader& reader, const MediaFrameArrivedEventArgs&)
@@ -228,11 +230,34 @@ CaptureSession startReader(const hstring& deviceId, uint32_t width, uint32_t hei
         try
         {
             const auto frame = reader.TryAcquireLatestFrame();
+            {
+                std::lock_guard lock(state->mutex);
+                ++state->frameArrivals;
+                if (!frame) ++state->emptyFrames;
+            }
             if (!frame) return;
             const auto video = frame.VideoMediaFrame();
-            if (!video) return;
+            if (!video)
+            {
+                std::lock_guard lock(state->mutex);
+                state->failed = true;
+                state->failureCode = E_FAIL;
+                state->failureStage = "no-video-frame";
+                state->changed.notify_all();
+                return;
+            }
+            const auto bitmap = video.SoftwareBitmap();
+            if (!bitmap)
+            {
+                std::lock_guard lock(state->mutex);
+                state->failed = true;
+                state->failureCode = E_FAIL;
+                state->failureStage = "no-software-bitmap";
+                state->changed.notify_all();
+                return;
+            }
             std::vector<uint8_t> pixels;
-            if (!copyNv12(video.SoftwareBitmap(), pixels))
+            if (!copyNv12(bitmap, pixels))
             {
                 std::lock_guard lock(state->mutex);
                 state->failed = true;
@@ -528,7 +553,9 @@ int publish(const std::vector<std::wstring>& args)
             }
             if (camera.state->sequence == lastSequence)
             {
-                std::cout << "SONOBUS_ERROR=unavailable:frame-timeout" << std::endl;
+                const auto stage = camera.state->frameArrivals == 0 ? "no-frame-arrival"
+                                  : camera.state->emptyFrames > 0 ? "empty-frame" : "no-frame-progress";
+                std::cout << "SONOBUS_ERROR=unavailable:frame-timeout:" << stage << std::endl;
                 return 3;
             }
             lastSequence = camera.state->sequence;
