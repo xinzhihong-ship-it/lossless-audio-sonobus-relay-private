@@ -6,8 +6,6 @@
 #include <iterator>
 #include <algorithm>
 #include <regex>
-#include <atomic>
-#include <thread>
 
 #if JUCE_MAC
  #include <dlfcn.h>
@@ -1073,20 +1071,28 @@ juce::StringArray VideoRelayClient::availableEncoders(const juce::String& ffmpeg
     if (! probe.start({ ffmpegPath, "-hide_banner", "-encoders" }, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         return {};
 
+    // Drain incrementally so a large -encoders listing can never fill the pipe and stall ffmpeg;
+    // never block on a reader thread (join() would hang the caller if the child ever stops writing).
     juce::String output;
-    std::atomic<bool> outputReady { false };
-    std::thread reader([&]
-    {
-        output = probe.readAllProcessOutput();
-        outputReady.store(true);
-    });
-
+    char buffer[4096];
     const auto deadline = juce::Time::getMillisecondCounter() + 5000;
-    while (! outputReady.load() && juce::Time::getMillisecondCounter() < deadline)
+    while (probe.isRunning() && juce::Time::getMillisecondCounter() < deadline)
+    {
+        for (;;)
+        {
+            const auto count = probe.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+            if (count <= 0) break;
+            output += juce::String::fromUTF8(buffer, count);
+        }
         juce::Thread::sleep(2);
-    if (! outputReady.load()) probe.kill();
-    reader.join();
-    if (! outputReady.load()) return {};
+    }
+    if (probe.isRunning()) probe.kill();
+    for (;;)
+    {
+        const auto count = probe.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+        if (count <= 0) break;
+        output += juce::String::fromUTF8(buffer, count);
+    }
 
     juce::StringArray result;
     for (const auto& name : { "h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264" })
