@@ -298,7 +298,8 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
     const auto startStatus = session.reader.StartAsync().get();
     if (startStatus != MediaFrameReaderStartStatus::Success)
     {
-        std::cout << "reader_start_status=" << static_cast<int>(startStatus) << '\n' << std::flush;
+        // 0=Success 1=UnknownFailure 2=DeviceNotAvailable 3=OutputFormatNotSupported
+        std::cout << "SONOBUS_ERROR=unavailable:reader-start:" << static_cast<int>(startStatus) << std::endl;
         throw hresult_error(E_FAIL, L"The shared camera frame reader could not start.");
     }
     return session;
