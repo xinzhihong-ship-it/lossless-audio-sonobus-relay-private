@@ -295,8 +295,12 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
             state->changed.notify_all();
         }
     });
-    if (session.reader.StartAsync().get() != MediaFrameReaderStartStatus::Success)
+    const auto startStatus = session.reader.StartAsync().get();
+    if (startStatus != MediaFrameReaderStartStatus::Success)
+    {
+        std::cout << "reader_start_status=" << static_cast<int>(startStatus) << '\n' << std::flush;
         throw hresult_error(E_FAIL, L"The shared camera frame reader could not start.");
+    }
     return session;
 }
 
@@ -586,10 +590,13 @@ int publish(const std::vector<std::wstring>& args)
     catch (const hresult_error& error)
     {
         const auto code = error.code();
-        const auto busy = code == E_ACCESSDENIED || code == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
-                       || code == HRESULT_FROM_WIN32(ERROR_BUSY) || code == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED
-                       || code == 0xC00D3704;  // MF_E_VIDEO_RECORDING_DEVICE_IN_USE
-        if (! busy) throw;
+        // Any failure on the exclusive attempt (busy, denied, E_FAIL from frame-server quirks)
+        // falls back to SharedReadOnly before giving up.
+        const auto retryShared = code == E_ACCESSDENIED || code == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
+                              || code == HRESULT_FROM_WIN32(ERROR_BUSY) || code == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED
+                              || code == 0xC00D3704  // MF_E_VIDEO_RECORDING_DEVICE_IN_USE
+                              || code == E_FAIL;
+        if (! retryShared) throw;
         camera = openSharedCamera(hstring(device), width, height, fps, true);
         shared = true;
     }
