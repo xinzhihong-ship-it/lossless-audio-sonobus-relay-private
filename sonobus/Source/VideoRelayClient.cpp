@@ -16,6 +16,82 @@
  #include <windows.h>
 #endif
 
+#if JUCE_WINDOWS
+namespace {
+
+// Best-effort crash logger: the relay thread dies with an unhandled SEH
+// exception (C++ try/catch cannot see it) and the log stops mid-line with no
+// clue. A vectored handler sees every exception before the process terminates,
+// so the next run records the exact crash address. Only the relay thread is
+// logged to avoid noise from the host DAW.
+std::atomic<uint32_t> sehRelayThreadId { 0 };
+HANDLE sehLogHandle = INVALID_HANDLE_VALUE;
+
+LONG WINAPI relaySehHandler(EXCEPTION_POINTERS* info) noexcept
+{
+    if (info == nullptr || GetCurrentThreadId() != sehRelayThreadId.load())
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    char line[192];
+    const auto length = (DWORD) wsprintfA(line,
+        "\nSEH exception 0x%08X at 0x%p (relay thread)\n",
+        (unsigned int) info->ExceptionRecord->ExceptionCode,
+        info->ExceptionRecord->ExceptionAddress);
+    if (sehLogHandle != INVALID_HANDLE_VALUE)
+    {
+        DWORD written = 0;
+        WriteFile(sehLogHandle, line, length, &written, nullptr);
+        FlushFileBuffers(sehLogHandle);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+} // namespace
+#endif
+
+class VideoRelayClient::PublisherDrainer final : public juce::Thread
+{
+public:
+    explicit PublisherDrainer(VideoRelayClient& owner)
+        : juce::Thread("SonoBus Relay Drainer"), owner(owner)
+    {
+    }
+
+    void run() override
+    {
+        auto lastLogMs = juce::Time::getMillisecondCounter();
+        while (! threadShouldExit())
+        {
+            owner.readPublisherProgress();
+            bool active = false;
+            {
+                const juce::ScopedLock lock(owner.stateLock);
+                active = owner.publisher != nullptr && owner.publisher->isRunning();
+            }
+            if (! active)
+            {
+                wait(200);
+                continue;
+            }
+            // Liveness heartbeat in the log: proves frames reach ffmpeg
+            // (capture_fps) and that the drainer outlives the relay thread.
+            const auto nowMs = juce::Time::getMillisecondCounter();
+            if (nowMs - lastLogMs >= 5000)
+            {
+                lastLogMs = nowMs;
+                const juce::ScopedLock lock(owner.stateLock);
+                owner.logMsg("drain alive capture_fps=" + juce::String(owner.captureFps, 1)
+                             + " fps=" + juce::String(owner.actualFps, 1)
+                             + " bitrate=" + juce::String(owner.actualBitrate));
+            }
+            wait(50);
+        }
+    }
+
+private:
+    VideoRelayClient& owner;
+};
+
 namespace
 {
 constexpr int controlPort = 19090;
@@ -176,15 +252,29 @@ void VideoRelayClient::start(const juce::String& host_,
     relayLog = std::make_unique<juce::FileLogger>
         (juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("SonoBusVideoRelay.log"),
          "SonoBus video relay", 0);
+#if JUCE_WINDOWS
+    if (sehLogHandle == INVALID_HANDLE_VALUE)
+        sehLogHandle = CreateFileW(relayLog->getLogFile().getFullPathName().toWideCharPointer(),
+                                   FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+#endif
     logMsg("start host=" + host + " group=" + group + " user=" + user);
+    drainer = std::make_unique<PublisherDrainer>(*this);
+    drainer->startThread();
     startThread();
 }
 
 void VideoRelayClient::stop()
 {
+    if (drainer != nullptr) drainer->signalThreadShouldExit();
     signalThreadShouldExit();
     stopPublisher();
     stopThread(5000);
+    if (drainer != nullptr) drainer->stopThread(5000);
+    drainer.reset();
+#if JUCE_WINDOWS
+    RemoveVectoredExceptionHandler(relaySehHandler);
+#endif
     {
         const juce::ScopedLock lock(stateLock);
         cameras.clear();
@@ -217,6 +307,10 @@ void VideoRelayClient::run()
 
 void VideoRelayClient::runVideoLoop()
 {
+#if JUCE_WINDOWS
+    sehRelayThreadId.store(GetCurrentThreadId());
+    AddVectoredExceptionHandler(1, relaySehHandler);
+#endif
     try
     {
     const auto ffmpegPath = findFfmpeg();
@@ -1063,27 +1157,56 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             if (process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)
                 && ! process->waitForProcessToFinish(1500))
             {
-                logMsg("dshow publisher running");
                 auto cameraName = desired.cameraDeviceId;
                 for (const auto& device : devices)
                     if (device.id == desired.cameraDeviceId) cameraName = device.name;
+                // Bounded lock: the relay thread once wedged here forever when
+                // another thread held stateLock (process stayed alive, ffmpeg
+                // orphan kept publishing, log stopped at the next line). Never
+                // wait indefinitely; store the publisher as soon as the lock
+                // frees so the drainer thread can keep ffmpeg's pipe empty.
+                bool stored = false;
+                for (int attempt = 0; attempt < 30; ++attempt)
                 {
-                    const juce::ScopedLock lock(stateLock);
-                    publisher = std::move(process);
-                    activeCameraId = desired.cameraDeviceId;
-                    activeCamera = cameraName;
-                    activeEncoder = "libx264";
-                    captureMode = {};
-                    activeMaxHeight = desired.maxHeight;
-                    activeMaxFps = desired.maxFps;
-                    activeMaxBitrate = desired.maxBitrate;
-                    activeMode = outputMode;
-                    captureFps = 0.0;
-                    actualFps = 0.0;
-                    actualBitrate = 0;
-                    progressBuffer.clear();
-                    lastError.clear();
+                    const juce::ScopedTryLock lock(stateLock);
+                    if (lock.isLocked())
+                    {
+                        publisher = std::move(process);
+                        activeCameraId = desired.cameraDeviceId;
+                        activeCamera = cameraName;
+                        activeEncoder = "libx264";
+                        captureMode = {};
+                        activeMaxHeight = desired.maxHeight;
+                        activeMaxFps = desired.maxFps;
+                        activeMaxBitrate = desired.maxBitrate;
+                        activeMode = outputMode;
+                        captureFps = 0.0;
+                        actualFps = 0.0;
+                        actualBitrate = 0;
+                        progressBuffer.clear();
+                        lastError.clear();
+                        stored = true;
+                        break;
+                    }
+                    if (threadShouldExit())
+                    {
+                        process->kill();
+                        return false;
+                    }
+                    logMsg("stateLock busy, retrying publisher store (" + juce::String(attempt + 1) + "/30)");
+                    juce::Thread::sleep(100);
                 }
+                if (! stored)
+                {
+                    logMsg("stateLock stuck 3s, aborting dshow publisher");
+                    process->kill();
+                    return false;
+                }
+                // Log after the publisher is registered so the drainer thread
+                // already has the process to drain; otherwise a crash between
+                // this log and the state store would leave an orphaned ffmpeg
+                // whose stdout nobody reads, stalling the stream (OBS black).
+                logMsg("dshow publisher running");
                 return true;
             }
             const auto dshowDetail = process->readAllProcessOutput();
