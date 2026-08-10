@@ -583,18 +583,24 @@ int listCameras(const std::vector<std::wstring>& args)
         std::istringstream lines(output);
         std::string line;
         std::vector<std::pair<std::string, std::string>> dshowDevices;  // name, alternative name
+        bool lastWasAudio = false;
         while (std::getline(lines, line))
         {
             const auto altMarker = line.find("Alternative name");
             if (altMarker != std::string::npos)
             {
-                const auto openQuote = line.find('"', altMarker);
-                const auto closeQuote = openQuote == std::string::npos ? std::string::npos : line.find('"', openQuote + 1);
-                if (openQuote != std::string::npos && closeQuote != std::string::npos && ! dshowDevices.empty())
-                    dshowDevices.back().second = line.substr(openQuote + 1, closeQuote - openQuote - 1);
+                // An alternative name line always belongs to the device listed just before it.
+                // Audio devices (skipped above) must not overwrite the previous video device.
+                if (! lastWasAudio && ! dshowDevices.empty())
+                {
+                    const auto openQuote = line.find('"', altMarker);
+                    const auto closeQuote = openQuote == std::string::npos ? std::string::npos : line.find('"', openQuote + 1);
+                    if (openQuote != std::string::npos && closeQuote != std::string::npos)
+                        dshowDevices.back().second = line.substr(openQuote + 1, closeQuote - openQuote - 1);
+                }
                 continue;
             }
-            if (line.find("(audio)") != std::string::npos) continue;
+            if (line.find("(audio)") != std::string::npos) { lastWasAudio = true; continue; }
             const auto openQuote = line.find('"');
             if (openQuote == std::string::npos) continue;
             const auto closeQuote = line.find('"', openQuote + 1);
@@ -603,8 +609,9 @@ int listCameras(const std::vector<std::wstring>& args)
             if (name.empty()) continue;
             auto lower = name;
             std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (lower.find("audio") != std::string::npos || lower.find("microphone") != std::string::npos) continue;
+            if (lower.find("audio") != std::string::npos || lower.find("microphone") != std::string::npos) { lastWasAudio = true; continue; }
             dshowDevices.emplace_back(cleanField(name), std::string());
+            lastWasAudio = false;
         }
         for (const auto& [name, alternative] : dshowDevices)
         {
