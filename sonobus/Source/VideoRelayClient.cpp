@@ -977,6 +977,8 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     }
     {
         const juce::ScopedLock lock(stateLock);
+        if (launchErrors.isEmpty() && encoders.isEmpty())
+            launchErrors = sonobus::video::translated(u8"FFmpeg 未检测到任何 H.264 编码器");
         lastError = launchErrors.isNotEmpty() ? launchErrors
             : sonobus::video::translated(u8"没有可用的 H.264 编码器或编码硬件");
     }
@@ -1039,7 +1041,11 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
                 }
                 return true;
             }
-            launchErrors = cameraFailureMessage(process->readAllProcessOutput());
+            const auto dshowDetail = process->readAllProcessOutput();
+            launchErrors = cameraFailureMessage(dshowDetail);
+            if (launchErrors.isEmpty()) launchErrors = sonobus::video::lastOutputLine(dshowDetail);
+            if (launchErrors.isEmpty())
+                launchErrors = sonobus::video::translated(u8"DirectShow 采集启动失败（设备可能被占用）");
         }
     }
 #endif
@@ -1141,6 +1147,17 @@ juce::String VideoRelayClient::findFfmpeg() const
 #endif
     const auto sibling = module.getSiblingFile(fileName);
     if (sibling.existsAsFile()) return sibling.getFullPathName();
+#if JUCE_WINDOWS
+    // VST3 bundle: the DLL sits in Contents\x86_64-win\ while ffmpeg may live in the
+    // bundle root or the arch folder; walk upwards to find it.
+    for (auto directory = module.getParentDirectory();
+         directory != directory.getParentDirectory();
+         directory = directory.getParentDirectory())
+    {
+        const auto candidate = directory.getChildFile(fileName);
+        if (candidate.existsAsFile()) return candidate.getFullPathName();
+    }
+#endif
 #if JUCE_MAC
     const auto resources = module.getParentDirectory().getSiblingFile("Resources").getChildFile(fileName);
     if (resources.existsAsFile()) return resources.getFullPathName();
@@ -1155,6 +1172,15 @@ juce::String VideoRelayClient::findWindowsCaptureHelper() const
     if (overridePath.isNotEmpty() && juce::File(overridePath).existsAsFile()) return overridePath;
     const auto sibling = moduleFile().getSiblingFile("SonoBusVideoCaptureHelper.exe");
     if (sibling.existsAsFile()) return sibling.getFullPathName();
+    // VST3 bundle fallback: walk upwards from the DLL directory.
+    const auto module = moduleFile();
+    for (auto directory = module.getParentDirectory();
+         directory != directory.getParentDirectory();
+         directory = directory.getParentDirectory())
+    {
+        const auto candidate = directory.getChildFile("SonoBusVideoCaptureHelper.exe");
+        if (candidate.existsAsFile()) return candidate.getFullPathName();
+    }
 #endif
     return {};
 }
