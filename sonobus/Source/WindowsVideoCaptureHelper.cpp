@@ -550,12 +550,6 @@ int publish(const std::vector<std::wstring>& args)
         {
             const auto measuredFps = frames / elapsed;
             std::cout << "capture_fps=" << measuredFps << '\n' << std::flush;
-            const auto minimumFps = std::max(1.0, camera.mode.fps - 1.0);
-            if (measuredFps < minimumFps)
-            {
-                std::cout << "SONOBUS_ERROR=unavailable:shared-frame-rate-below-expected" << std::endl;
-                return 3;
-            }
             frames = 0;
             fpsWindow = now;
         }

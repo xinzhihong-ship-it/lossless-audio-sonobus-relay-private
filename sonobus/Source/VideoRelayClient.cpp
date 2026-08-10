@@ -993,9 +993,9 @@ void VideoRelayClient::readPublisherProgress()
         if (line.startsWith("capture_fps="))
         {
             captureFps = line.fromFirstOccurrenceOf("=", false, false).getDoubleValue();
-            const auto minimumFps = juce::jmax(1.0, captureMode.fps - 1.0);
-            if (captureFps >= minimumFps)
+            if (captureFps > 0.5)
             {
+                captureMode.fps = captureFps;
                 lastError.clear();
                 status.store(Status::online);
             }
