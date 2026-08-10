@@ -211,28 +211,25 @@ void VideoRelayClient::run()
     setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"此平台构建不支持摄像头"));
     while (! threadShouldExit()) wait(500);
 #else
-    try
-    {
 #if JUCE_WINDOWS
-    __try { runVideoLoop(); }
-    __except (logException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { logMsg("SEH terminated run"); }
+    __try
+    {
+        runVideoLoop();
+    }
+    __except (logException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER)
+    {
+        logMsg("SEH terminated run");
+    }
 #else
     runVideoLoop();
 #endif
-    }
-    catch (const std::exception& e)
-    {
-        logMsg("CRASH std::exception: " + juce::String(e.what()));
-    }
-    catch (...)
-    {
-        logMsg("CRASH unknown exception");
-    }
 #endif
 }
 
 void VideoRelayClient::runVideoLoop()
 {
+    try
+    {
     const auto ffmpegPath = findFfmpeg();
     logMsg("ffmpeg=" + (ffmpegPath.isEmpty() ? juce::String("MISSING") : ffmpegPath));
     if (ffmpegPath.isEmpty())
@@ -458,6 +455,15 @@ void VideoRelayClient::runVideoLoop()
         }
     }
     stopPublisher();
+    }
+    catch (const std::exception& e)
+    {
+        logMsg("CRASH std::exception: " + juce::String(e.what()));
+    }
+    catch (...)
+    {
+        logMsg("CRASH unknown exception");
+    }
 }
 void VideoRelayClient::logMsg(const juce::String& msg)
 {
