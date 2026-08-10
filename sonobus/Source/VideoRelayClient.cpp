@@ -708,18 +708,20 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
             juce::String dshowOutput;
             if (runProbe(dshow, 10000, dshowOutput))
             {
-                bool inVideoSection = false;
+                // ffmpeg 7.x prints device lines without a section header, e.g.
+                //   [dshow @ ...] "YY开播" (video)
+                //   [dshow @ ...]   Alternative name "@device_sw_..."
                 for (const auto& line : juce::StringArray::fromLines(dshowOutput))
                 {
-                    if (line.contains("DirectShow video devices")) { inVideoSection = true; continue; }
-                    if (line.contains("DirectShow audio devices")) { inVideoSection = false; continue; }
-                    if (! inVideoSection) continue;
+                    if (line.contains("Alternative name")) continue;
+                    if (line.contains("(audio)")) continue;
                     const auto openQuote = line.indexOfChar('"');
                     if (openQuote < 0) continue;
                     const auto closeQuote = line.indexOfChar('"', openQuote + 1);
                     if (closeQuote < 0) continue;
                     const auto name = line.substring(openQuote + 1, closeQuote).trim();
                     if (name.isEmpty()) continue;
+                    if (name.containsIgnoreCase("audio") || name.containsIgnoreCase("microphone")) continue;
                     // Skip names already listed by the MediaFoundation helper.
                     bool alreadyListed = false;
                     for (const auto& existing : result)
