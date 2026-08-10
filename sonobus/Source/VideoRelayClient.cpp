@@ -924,7 +924,9 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
                                       CameraMode mode)
 {
     const auto outputMode = outputModeFor(mode, desired);
+    logMsg("startPublisher camera=" + desired.cameraDeviceId + " encoders probe begin");
     const auto encoders = availableEncoders(ffmpegPath);
+    logMsg("startPublisher encoders=" + juce::String(encoders.size()));
 #if JUCE_WINDOWS
     const auto encoderProbeMode = outputMode;
     juce::ignoreUnused(encoderProbeMode);
@@ -1052,6 +1054,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             if (process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)
                 && ! process->waitForProcessToFinish(1500))
             {
+                logMsg("dshow publisher running");
                 auto cameraName = desired.cameraDeviceId;
                 for (const auto& device : devices)
                     if (device.id == desired.cameraDeviceId) cameraName = device.name;
@@ -1075,6 +1078,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
                 return true;
             }
             const auto dshowDetail = process->readAllProcessOutput();
+            logMsg("dshow publisher failed: " + (dshowDetail.isNotEmpty() ? dshowDetail.substring(0, 200) : juce::String("(no output)")));
             launchErrors = cameraFailureMessage(dshowDetail);
             if (launchErrors.isEmpty()) launchErrors = sonobus::video::lastOutputLine(dshowDetail);
             if (launchErrors.isEmpty())
