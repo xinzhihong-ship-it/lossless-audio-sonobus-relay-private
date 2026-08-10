@@ -579,7 +579,7 @@ int listCameras(const std::vector<std::wstring>& args)
     // (already allowed by security software) performs every enumeration.
     if (! ffmpeg.empty())
     {
-        const auto output = runCommandCapture(ffmpeg + L" -hide_banner -f dshow -list_devices true -i dummy");
+        const auto output = runCommandCapture(quoteArgument(ffmpeg) + L" -hide_banner -f dshow -list_devices true -i dummy");
         std::istringstream lines(output);
         std::string line;
         while (std::getline(lines, line))
