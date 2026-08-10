@@ -466,6 +466,9 @@ public:
     int read (void* dest, int numNeeded) const noexcept
     {
         int total = 0;
+        // ponytail: bounded wait so a paused child (e.g. ffmpeg with no camera frames)
+        // never blocks the parent thread forever; upgrade: per-read timeout from caller.
+        auto idleDeadline = Time::getMillisecondCounter() + 1000;
 
         while (ok && numNeeded > 0)
         {
@@ -479,6 +482,8 @@ public:
             if (available == 0)
             {
                 if (! isRunning())
+                    break;
+                if (Time::getMillisecondCounter() >= idleDeadline)
                     break;
 
                 Thread::sleep (1);
