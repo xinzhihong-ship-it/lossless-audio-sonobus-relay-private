@@ -45,6 +45,34 @@ juce::File moduleFile()
     return juce::File::getSpecialLocation(juce::File::currentExecutableFile);
 }
 
+// Drains a child process without ever blocking the caller: reads output in
+// small non-blocking chunks while the process runs, kills on timeout, then
+// drains once more. Returns true when the process finished on its own.
+bool runProbe(juce::ChildProcess& probe, int timeoutMs, juce::String& output)
+{
+    char buffer[4096];
+    const auto deadline = juce::Time::getMillisecondCounter() + timeoutMs;
+    while (probe.isRunning() && juce::Time::getMillisecondCounter() < deadline)
+    {
+        for (;;)
+        {
+            const auto count = probe.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+            if (count <= 0) break;
+            output += juce::String::fromUTF8(buffer, count);
+        }
+        juce::Thread::sleep(2);
+    }
+    const auto finished = ! probe.isRunning();
+    if (! finished) probe.kill();
+    for (;;)
+    {
+        const auto count = probe.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
+        if (count <= 0) break;
+        output += juce::String::fromUTF8(buffer, count);
+    }
+    return finished;
+}
+
 juce::String formatHost(const juce::String& host)
 {
     return host.containsChar(':') && ! host.startsWithChar('[') ? "[" + host + "]" : host;
@@ -660,12 +688,9 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
         error = sonobus::video::translated(u8"无法启动 Windows 共享摄像头枚举");
         return result;
     }
-    if (! probe.waitForProcessToFinish(10000))
-    {
-        probe.kill();
+    juce::String output;
+    if (! runProbe(probe, 10000, output))
         error = sonobus::video::translated(u8"Windows 共享摄像头枚举超时");
-    }
-    const auto output = probe.readAllProcessOutput();
     for (const auto& device : sonobus::video::parseWindowsCameraDevices(output))
         result.add({ device.id, device.name });
     if (result.isEmpty() && error.isEmpty())
@@ -681,12 +706,9 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
         error = sonobus::video::translated(u8"无法启动摄像头枚举程序");
         return result;
     }
-    if (! probe.waitForProcessToFinish(5000))
-    {
-        probe.kill();
+    juce::String output;
+    if (! runProbe(probe, 5000, output))
         error = sonobus::video::translated(u8"摄像头枚举超时");
-    }
-    const auto output = probe.readAllProcessOutput();
     bool inVideoSection = false;
     for (const auto& line : juce::StringArray::fromLines(output))
     {
@@ -723,12 +745,9 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
         error = sonobus::video::translated(u8"无法读取 Windows 共享摄像头模式");
         return result;
     }
-    if (! probe.waitForProcessToFinish(15000))
-    {
-        probe.kill();
+    juce::String outputText;
+    if (! runProbe(probe, 15000, outputText))
         error = sonobus::video::translated(u8"读取 Windows 共享摄像头模式超时");
-    }
-    const auto outputText = probe.readAllProcessOutput();
     for (const auto& mode : sonobus::video::parseWindowsCameraModes(outputText))
         result.addIfNotAlreadyThere({ mode.width, mode.height, mode.fps });
     if (result.isEmpty() && error.isEmpty())
@@ -747,12 +766,9 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
         error = sonobus::video::translated(u8"无法读取摄像头模式");
         return result;
     }
-    if (! probe.waitForProcessToFinish(5000))
-    {
-        probe.kill();
+    juce::String outputText;
+    if (! runProbe(probe, 5000, outputText))
         error = sonobus::video::translated(u8"读取摄像头模式超时");
-    }
-    const auto outputText = probe.readAllProcessOutput();
     const auto output = outputText.toStdString();
     for (auto match = std::sregex_iterator(output.begin(), output.end(), modePattern); match != std::sregex_iterator(); ++match)
     {
@@ -821,13 +837,13 @@ bool VideoRelayClient::probeCameraMode(const juce::String& ffmpegPath,
         error = sonobus::video::translated(u8"无法启动摄像头探测");
         return false;
     }
-    if (! probe.waitForProcessToFinish(4000))
+    juce::String output;
+    const auto finished = runProbe(probe, 4000, output);
+    if (! finished)
     {
-        probe.kill();
         error = sonobus::video::translated(u8"摄像头响应超时");
         return false;
     }
-    const auto output = probe.readAllProcessOutput();
     if (! threadShouldExit() && probe.getExitCode() == 0) return true;
     error = cameraFailureMessage(output);
     if (error.isEmpty()) error = sonobus::video::translated(u8"摄像头模式探测失败");
@@ -857,13 +873,13 @@ bool VideoRelayClient::probeEncoder(const juce::String& ffmpegPath,
                          "-g", juce::String(gop), "-f", "null", "-" });
     juce::ChildProcess probe;
     if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) return false;
-    if (! probe.waitForProcessToFinish(5000))
+    juce::String output;
+    const auto finished = runProbe(probe, 5000, output);
+    if (! finished)
     {
-        probe.kill();
         error = sonobus::video::translated(u8"H.264 编码器探测超时");
         return false;
     }
-    const auto output = probe.readAllProcessOutput();
     if (! threadShouldExit() && probe.getExitCode() == 0) return true;
     error = cameraFailureMessage(output);
     if (error.isEmpty()) error = sonobus::video::lastOutputLine(output);
@@ -1071,29 +1087,8 @@ juce::StringArray VideoRelayClient::availableEncoders(const juce::String& ffmpeg
     if (! probe.start({ ffmpegPath, "-hide_banner", "-encoders" }, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         return {};
 
-    // Drain incrementally so a large -encoders listing can never fill the pipe and stall ffmpeg;
-    // never block on a reader thread (join() would hang the caller if the child ever stops writing).
     juce::String output;
-    char buffer[4096];
-    const auto deadline = juce::Time::getMillisecondCounter() + 5000;
-    while (probe.isRunning() && juce::Time::getMillisecondCounter() < deadline)
-    {
-        for (;;)
-        {
-            const auto count = probe.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
-            if (count <= 0) break;
-            output += juce::String::fromUTF8(buffer, count);
-        }
-        juce::Thread::sleep(2);
-    }
-    if (probe.isRunning()) probe.kill();
-    for (;;)
-    {
-        const auto count = probe.readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
-        if (count <= 0) break;
-        output += juce::String::fromUTF8(buffer, count);
-    }
-
+    runProbe(probe, 5000, output);
     juce::StringArray result;
     for (const auto& name : { "h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264" })
         if (output.containsWholeWord(name)) result.add(name);
