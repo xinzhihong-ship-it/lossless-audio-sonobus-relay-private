@@ -213,6 +213,26 @@ void VideoRelayClient::run()
 #else
     try
     {
+#if JUCE_WINDOWS
+    __try { runVideoLoop(); }
+    __except (logException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { logMsg("SEH terminated run"); }
+#else
+    runVideoLoop();
+#endif
+    }
+    catch (const std::exception& e)
+    {
+        logMsg("CRASH std::exception: " + juce::String(e.what()));
+    }
+    catch (...)
+    {
+        logMsg("CRASH unknown exception");
+    }
+#endif
+}
+
+void VideoRelayClient::runVideoLoop()
+{
     const auto ffmpegPath = findFfmpeg();
     logMsg("ffmpeg=" + (ffmpegPath.isEmpty() ? juce::String("MISSING") : ffmpegPath));
     if (ffmpegPath.isEmpty())
@@ -438,21 +458,23 @@ void VideoRelayClient::run()
         }
     }
     stopPublisher();
-    }
-    catch (const std::exception& e)
-    {
-        logMsg("CRASH std::exception: " + juce::String(e.what()));
-    }
-    catch (...)
-    {
-        logMsg("CRASH unknown exception");
-    }
-#endif
 }
 void VideoRelayClient::logMsg(const juce::String& msg)
 {
     if (relayLog != nullptr) relayLog->logMessage(msg);
 }
+
+#if JUCE_WINDOWS
+int VideoRelayClient::logException(unsigned code, void* infoPtr)
+{
+    auto* info = static_cast<_EXCEPTION_POINTERS*>(infoPtr);
+    juce::String detail = "SEH code=0x" + juce::String::toHexString((int) code)
+        + (info && info->ExceptionRecord ? " addr=0x" + juce::String::toHexString((int) (intptr_t) info->ExceptionRecord->ExceptionAddress) : "");
+    logMsg("SEH exception: " + detail);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 
 bool VideoRelayClient::requestEnrollment(int& pollAfterMs)
 {
