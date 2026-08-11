@@ -95,6 +95,12 @@ export async function createApp(config: ServerConfig): Promise<App> {
     config.mediaMtxApiUsername,
     config.mediaMtxApiPassword
   );
+  // Camera enables are session grants, never durable server state.
+  for (const control of await store.listVideoControls()) {
+    if (control.enabled) {
+      await store.setVideoControl({ group: control.group, user: control.user, enabled: false });
+    }
+  }
   const groupMedia = mediaMtx && config.groupMediaManagerConfig
     ? new GroupMediaManager(config.groupMediaManagerConfig, mediaMtx)
     : undefined;

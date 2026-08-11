@@ -10,6 +10,28 @@ import { createApp } from "./app.js";
 import type { ConnectionServerAdmin } from "./connectionServerAdmin.js";
 import { MemoryStore } from "./store.js";
 
+test("server startup clears persisted camera enables", async () => {
+  const store = new MemoryStore();
+  await store.init();
+  await store.createVideoPairing({ pairingId: "pair-a", pairingKeyCiphertext: "key-a", group: "studio", user: "alice" });
+  await store.setVideoControl({ group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a" });
+
+  const app = await createApp({
+    jwtSecret: "test-secret",
+    adminUsername: "admin",
+    adminPassword: "admin-pass",
+    maxBytesPerSecondPerClient: 1024 * 1024,
+    store
+  });
+  await new Promise<void>((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    assert.equal((await store.getVideoControl("studio", "alice"))?.enabled, false);
+  } finally {
+    await app.close();
+  }
+});
+
 test("ensureAdmin updates an existing admin password from config", async () => {
   const store = new MemoryStore();
   await store.init();
