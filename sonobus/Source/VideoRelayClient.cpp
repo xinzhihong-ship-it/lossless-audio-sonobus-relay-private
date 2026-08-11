@@ -14,29 +14,54 @@
   #define NOMINMAX
  #endif
  #include <windows.h>
+ #include <psapi.h>
+ #pragma comment(lib, "psapi.lib")
 #endif
 
 #if JUCE_WINDOWS
 namespace {
 
-// Best-effort crash logger: the relay thread dies with an unhandled SEH
-// exception (C++ try/catch cannot see it) and the log stops mid-line with no
-// clue. A vectored handler sees every exception before the process terminates,
-// so the next run records the exact crash address. Only the relay thread is
-// logged to avoid noise from the host DAW.
-std::atomic<uint32_t> sehRelayThreadId { 0 };
+// Best-effort crash logger: an unhandled SEH exception (which C++ try/catch
+// cannot see) can kill the video client thread with no trace - the relay log
+// just stops mid-line. A vectored handler sees every exception, so the next
+// run records the exact crash address. Only crashes inside this plugin's own
+// module are logged, so exceptions from the host DAW stay silent.
+void* sehModuleBase = nullptr;
+size_t sehModuleSize = 0;
 HANDLE sehLogHandle = INVALID_HANDLE_VALUE;
 
 LONG WINAPI relaySehHandler(EXCEPTION_POINTERS* info) noexcept
 {
-    if (info == nullptr || GetCurrentThreadId() != sehRelayThreadId.load())
+    if (info == nullptr || sehModuleBase == nullptr)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const auto address = info->ExceptionRecord->ExceptionAddress;
+    const auto base = reinterpret_cast<const char*>(sehModuleBase);
+    const auto distance = reinterpret_cast<const char*>(address) - base;
+    if (distance < 0 || static_cast<size_t>(distance) >= sehModuleSize)
         return EXCEPTION_CONTINUE_SEARCH;
 
-    char line[192];
+    // Open the relay log lazily on first crash; never risk anything heavier.
+    if (sehLogHandle == INVALID_HANDLE_VALUE)
+    {
+        char appData[MAX_PATH]{};
+        if (GetEnvironmentVariableA("APPDATA", appData, MAX_PATH) > 0)
+        {
+            char path[MAX_PATH + 32]{};
+            wsprintfA(path, "%s\\SonoBusVideoRelay.log", appData);
+            sehLogHandle = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
+    }
+    const auto offset = static_cast<size_t>(distance);
+    char line[256];
     const auto length = (DWORD) wsprintfA(line,
-        "\nSEH exception 0x%08X at 0x%p (relay thread)\n",
+        "\nSEH exception 0x%08X at 0x%08X%08X thread=0x%X module_offset=0x%08X%08X\n",
         (unsigned int) info->ExceptionRecord->ExceptionCode,
-        info->ExceptionRecord->ExceptionAddress);
+        (DWORD) ((reinterpret_cast<uintptr_t>(address) >> 32) & 0xFFFFFFFFu),
+        (DWORD) (reinterpret_cast<uintptr_t>(address) & 0xFFFFFFFFu),
+        GetCurrentThreadId(),
+        (DWORD) ((offset >> 32) & 0xFFFFFFFFu),
+        (DWORD) (offset & 0xFFFFFFFFu));
     if (sehLogHandle != INVALID_HANDLE_VALUE)
     {
         DWORD written = 0;
@@ -205,6 +230,26 @@ juce::String cameraFailureMessage(const juce::String& output)
 VideoRelayClient::VideoRelayClient()
     : juce::Thread("SonoBus H264 video control")
 {
+#if JUCE_WINDOWS
+    // Register once, before anything can crash: start() runs on the AOO
+    // network thread and an unhandled SEH there is otherwise completely
+    // silent (the relay log just stops). Only plugin-module crashes log.
+    if (sehModuleBase == nullptr)
+    {
+        HMODULE module = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(&moduleAnchor), &module) != 0)
+        {
+            MODULEINFO moduleInfo{};
+            if (GetModuleInformation(GetCurrentProcess(), module, &moduleInfo, sizeof(moduleInfo)))
+            {
+                sehModuleBase = moduleInfo.lpBaseOfDll;
+                sehModuleSize = moduleInfo.SizeOfImage;
+            }
+        }
+        AddVectoredExceptionHandler(1, relaySehHandler);
+    }
+#endif
 }
 
 VideoRelayClient::~VideoRelayClient()
@@ -251,14 +296,9 @@ void VideoRelayClient::start(const juce::String& host_,
     setStatus(pairingId.isNotEmpty() && pairingKey.getSize() == 32 ? Status::connecting : Status::awaitingAuthorization);
     relayLog = std::make_unique<juce::FileLogger>
         (juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("SonoBusVideoRelay.log"),
-         "SonoBus video relay", 0);
-#if JUCE_WINDOWS
-    if (sehLogHandle == INVALID_HANDLE_VALUE)
-        sehLogHandle = CreateFileW(relayLog->getLogFile().getFullPathName().toWideCharPointer(),
-                                   FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-#endif
+         "SonoBus video relay", 1048576);  // keep 1 MB of history across restarts
     logMsg("start host=" + host + " group=" + group + " user=" + user);
+    logMsg("===== relay client start =====");
     drainer = std::make_unique<PublisherDrainer>(*this);
     drainer->startThread();
     startThread();
@@ -272,9 +312,6 @@ void VideoRelayClient::stop()
     stopThread(5000);
     if (drainer != nullptr) drainer->stopThread(5000);
     drainer.reset();
-#if JUCE_WINDOWS
-    RemoveVectoredExceptionHandler(relaySehHandler);
-#endif
     {
         const juce::ScopedLock lock(stateLock);
         cameras.clear();
@@ -307,10 +344,6 @@ void VideoRelayClient::run()
 
 void VideoRelayClient::runVideoLoop()
 {
-#if JUCE_WINDOWS
-    sehRelayThreadId.store(GetCurrentThreadId());
-    AddVectoredExceptionHandler(1, relaySehHandler);
-#endif
     try
     {
     const auto ffmpegPath = findFfmpeg();
