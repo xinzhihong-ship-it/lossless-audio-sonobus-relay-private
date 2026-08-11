@@ -95,6 +95,22 @@ test("paired client polls persisted admin state and receives scoped MediaMTX dig
     assert.equal(view?.maxHeight, 720);
     assert.equal(authWrites, 3, "steady-state polls must not rewrite global MediaMTX auth");
     await assert.rejects(() => service.poll(secondInput), /replayed/);
+
+    const reopenedInput = makePoll(key, pairing.pairingId, "client-b", 1, status);
+    const reopened = decodeResponse(key, reopenedInput.nonce!, await service.poll(reopenedInput));
+    assert.equal(reopened.enabled, false, "a reopened client must require a fresh admin enable");
+    assert.deepEqual(await service.activeGroups(), []);
+
+    await service.setDesired({ group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a" });
+    const realNow = Date.now;
+    Date.now = () => realNow() + 16_000;
+    try {
+      const [expired] = await service.list();
+      assert.equal(expired?.online, false);
+      assert.equal(expired?.enabled, false, "an expired client session must persist camera off");
+    } finally {
+      Date.now = realNow;
+    }
   } finally {
     await service.close();
   }

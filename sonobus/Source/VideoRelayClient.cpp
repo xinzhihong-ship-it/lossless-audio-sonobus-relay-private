@@ -110,7 +110,9 @@ bool runProbe(juce::ChildProcess& probe, int timeoutMs, juce::String& output)
 {
     char buffer[4096];
     const auto deadline = juce::Time::getMillisecondCounter() + timeoutMs;
-    while (probe.isRunning() && juce::Time::getMillisecondCounter() < deadline)
+    while (probe.isRunning()
+           && ! juce::Thread::currentThreadShouldExit()
+           && juce::Time::getMillisecondCounter() < deadline)
     {
         for (;;)
         {
@@ -262,8 +264,8 @@ void VideoRelayClient::start(const juce::String& host_,
 void VideoRelayClient::stop()
 {
     signalThreadShouldExit();
+    stopThread(3000);
     stopPublisher();
-    stopThread(5000);
     {
         const juce::ScopedLock lock(stateLock);
         cameras.clear();
@@ -314,8 +316,6 @@ void VideoRelayClient::runVideoLoop()
     DesiredState runningDesired;
     CameraMode runningMode;
     juce::String lastAttemptRevision;
-    double nextCameraAttemptMs = 0.0;
-    int retryDelayMs = 30000;
     double nextDeviceRefreshMs = 0.0;
     int deviceRefreshDelayMs = 1000;
     while (! threadShouldExit())
@@ -408,8 +408,6 @@ void VideoRelayClient::runVideoLoop()
             runningDesired = desired;
             runningMode = {};
             lastAttemptRevision.clear();
-            nextCameraAttemptMs = 0.0;
-            retryDelayMs = 30000;
             setStatus(Status::waitingForAdmin);
         }
         else if (desired.cameraDeviceId.isEmpty())
@@ -445,12 +443,6 @@ void VideoRelayClient::runVideoLoop()
                                          || desired.maxFps != runningDesired.maxFps
                                          || desired.maxBitrate != runningDesired.maxBitrate;
                 const bool attemptChanged = desired.revision != lastAttemptRevision;
-                if (attemptChanged)
-                {
-                    nextCameraAttemptMs = 0.0;
-                    retryDelayMs = 30000;
-                }
-                const auto nowMs = juce::Time::getMillisecondCounterHiRes();
                 bool hasPublisher = false;
                 bool publisherRunning = false;
                 {
@@ -465,10 +457,11 @@ void VideoRelayClient::runVideoLoop()
                     runningMode = {};
                     setStatus(Status::error, lastError.isNotEmpty() ? lastError : sonobus::video::translated(u8"H.264 编码进程已退出"));
                     hasPublisher = false;
-                    nextCameraAttemptMs = nowMs + retryDelayMs;
-                    retryDelayMs = juce::jmin(retryDelayMs * 2, 30000);
                 }
-                if ((! hasPublisher || desiredChanged) && nowMs >= nextCameraAttemptMs)
+                // One physical-camera open per admin revision. A failed camera
+                // stays stopped until the admin closes/reopens or changes a
+                // setting, avoiding repeated Windows camera reconnects.
+                if ((! hasPublisher || desiredChanged) && attemptChanged)
                 {
                     stopPublisher();
                     lastAttemptRevision = desired.revision;
@@ -480,8 +473,6 @@ void VideoRelayClient::runVideoLoop()
                     {
                         setStatus(Status::cameraUnavailable, lastError.isNotEmpty() ? lastError
                             : sonobus::video::translated(u8"摄像头没有可用的当前共享模式"));
-                        nextCameraAttemptMs = nowMs + retryDelayMs;
-                        retryDelayMs = juce::jmin(retryDelayMs * 2, 30000);
                     }
                     else
                     {
@@ -491,7 +482,6 @@ void VideoRelayClient::runVideoLoop()
                         {
                             runningDesired = launchDesired;
                             runningMode = mode;
-                            nextCameraAttemptMs = 0.0;
 #if ! JUCE_WINDOWS
                             setStatus(Status::online);
 #endif
@@ -501,18 +491,11 @@ void VideoRelayClient::runVideoLoop()
                             runningMode = {};
                             setStatus(Status::cameraUnavailable, lastError.isNotEmpty() ? lastError
                                 : sonobus::video::translated(u8"无法启动 H.264 硬件编码"));
-                            nextCameraAttemptMs = nowMs + retryDelayMs;
-                            retryDelayMs = juce::jmin(retryDelayMs * 2, 30000);
                         }
                     }
                 }
                 readPublisherProgress();
                 logMsg("post-publisher read done");
-                {
-                    const juce::ScopedLock lock(stateLock);
-                    const auto minimumFps = juce::jmax(1.0, captureMode.fps - 1.0);
-                    if (captureFps >= minimumFps) retryDelayMs = 1000;
-                }
             }
         }
 
@@ -580,7 +563,7 @@ bool VideoRelayClient::requestEnrollment(int& pollAfterMs)
     juce::StringPairArray responseHeaders;
     auto endpoint = juce::URL("http://" + formatHost(localHost) + ":" + juce::String(controlPort) + "/video/control/enroll").withPOSTData(body);
     auto stream = endpoint.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-                                                 .withConnectionTimeoutMs(5000)
+                                                 .withConnectionTimeoutMs(1500)
                                                  .withExtraHeaders("Content-Type: application/json\r\n")
                                                  .withResponseHeaders(&responseHeaders)
                                                  .withStatusCode(&statusCode)
@@ -679,7 +662,7 @@ bool VideoRelayClient::pollControl(DesiredState& desired, int& pollAfterMs)
     juce::StringPairArray responseHeaders;
     auto endpoint = juce::URL("http://" + formatHost(localHost) + ":" + juce::String(controlPort) + "/video/control/poll").withPOSTData(body);
     auto stream = endpoint.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-                                                 .withConnectionTimeoutMs(5000)
+                                                 .withConnectionTimeoutMs(1500)
                                                  .withExtraHeaders("Content-Type: application/json\r\n")
                                                  .withResponseHeaders(&responseHeaders)
                                                  .withStatusCode(&statusCode)
@@ -1024,7 +1007,8 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
 #if JUCE_MAC
     const juce::StringArray preferred { "h264_videotoolbox", "libx264" };
 #elif JUCE_WINDOWS
-    const juce::StringArray preferred { "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264" };
+    // One dependable encoder means one physical-camera open per admin action.
+    const juce::StringArray preferred { "libx264" };
 #else
     const juce::StringArray preferred { "libx264" };
 #endif

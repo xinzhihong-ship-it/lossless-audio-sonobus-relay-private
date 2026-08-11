@@ -263,7 +263,7 @@ export class VideoControlService {
     const replayKey = `${pairingId}\0${nonce}`;
     if (this.usedNonces.has(replayKey)) throw new Error("Video control poll was replayed.");
 
-    const control = (await this.store.listVideoControls()).find((candidate) => candidate.pairingId === pairingId);
+    let control = (await this.store.listVideoControls()).find((candidate) => candidate.pairingId === pairingId);
     if (!control) throw new Error("Unknown video pairing.");
     const key = decryptKey(control.pairingKeyCiphertext, this.encryptionKey);
     const expected = sign(key, pollSignatureInput(pairingId, clientId, timestamp, sequence, nonce, status));
@@ -272,6 +272,15 @@ export class VideoControlService {
     const existing = this.sessions.get(pairingId);
     if (existing?.clientId === clientId && sequence <= existing.lastSequence) throw new Error("Video control sequence was replayed.");
     const isNewSession = !existing || existing.clientId !== clientId || existing.lastSeenAt + SESSION_TTL_MS <= now;
+    // A camera grant is session-scoped: reopening the client always starts
+    // closed and requires a fresh admin click.
+    if (isNewSession && control.enabled) {
+      control = await this.store.setVideoControl({
+        group: control.group,
+        user: control.user,
+        enabled: false
+      });
+    }
     const session: ControlSession = {
       pairingId,
       group: control.group,
@@ -367,9 +376,18 @@ export class VideoControlService {
     try {
       const now = Date.now();
       let changed = false;
+      const controls = await this.store.listVideoControls();
       for (const [pairingId, session] of this.sessions) {
         if (session.lastSeenAt + SESSION_TTL_MS <= now) {
           this.sessions.delete(pairingId);
+          const control = controls.find((candidate) => candidate.pairingId === pairingId);
+          if (control?.enabled) {
+            await this.store.setVideoControl({
+              group: control.group,
+              user: control.user,
+              enabled: false
+            });
+          }
           changed = true;
         }
       }
