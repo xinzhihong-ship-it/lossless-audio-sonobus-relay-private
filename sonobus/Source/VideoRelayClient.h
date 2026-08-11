@@ -43,16 +43,7 @@ public:
 
 
 private:
-    class PublisherDrainer;
     using CameraDevice = sonobus::video::CameraDevice;
-
-    // Dedicated reader for the publisher's stdout/progress pipe. The relay thread
-    // dies on an unhandled Windows SEH crash right after starting the dshow
-    // publisher; if that thread was the only pipe reader, ffmpeg's -progress
-    // output fills the pipe and encoding stalls, leaving the RTSP ingest
-    // published but silent (OBS black). This thread keeps draining no matter
-    // what happens to the relay thread.
-    std::unique_ptr<PublisherDrainer> drainer;
 
     struct CameraMode
     {
@@ -159,6 +150,7 @@ private:
 
     std::atomic<Status> status { Status::idle };
     std::unique_ptr<juce::ChildProcess> publisher;
+    bool publisherProgressEnabled = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VideoRelayClient)
 };
