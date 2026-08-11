@@ -6,6 +6,10 @@ const juceThreads = fs.readFileSync(
   new URL("../sonobus/deps/juce/modules/juce_core/native/juce_Threads_windows.cpp", import.meta.url),
   "utf8",
 );
+const windowsCapture = fs.readFileSync(
+  new URL("../sonobus/Source/WindowsVideoCaptureHelper.cpp", import.meta.url),
+  "utf8",
+);
 
 function assertContains(name, pattern) {
   if (!pattern.test(source)) {
@@ -56,6 +60,12 @@ assertBlockContains(
 
 if (!/if\s*\(\s*available\s*==\s*0\s*\)\s*break\s*;/m.test(juceThreads)) {
   console.error("Missing non-blocking Windows child-process pipe read");
+  process.exitCode = 1;
+}
+
+if (!/SharingMode\s*\(\s*MediaCaptureSharingMode::SharedReadOnly\s*\)/m.test(windowsCapture)
+    || /MediaCaptureSharingMode>\s*\(\s*0\s*\)/m.test(windowsCapture)) {
+  console.error("Windows physical camera capture is not strictly SharedReadOnly");
   process.exitCode = 1;
 }
 

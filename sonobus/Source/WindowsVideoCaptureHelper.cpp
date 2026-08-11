@@ -138,7 +138,7 @@ bool isPreferredMode(const Mode& candidate, const Mode& current)
 }
 
 CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth = 0, uint32_t requestedHeight = 0,
-                                double requestedFps = 0.0, bool shared = true)
+                                double requestedFps = 0.0)
 {
     const auto group = findGroup(deviceId);
     if (!group) throw hresult_error(HRESULT_FROM_WIN32(ERROR_NOT_FOUND), L"The selected camera source group is unavailable.");
@@ -146,11 +146,7 @@ CaptureSession openSharedCamera(const hstring& deviceId, uint32_t requestedWidth
     MediaCaptureInitializationSettings settings;
     settings.SourceGroup(group);
     settings.StreamingCaptureMode(StreamingCaptureMode::Video);
-    // SharedReadOnly keeps the camera transparent for every other app; Exclusive is only used
-    // when the camera is idle so frames actually flow (shared mode delivers frames only while
-    // another app is actively using the camera).
-    settings.SharingMode(shared ? MediaCaptureSharingMode::SharedReadOnly
-                             : static_cast<MediaCaptureSharingMode>(0));  // 0 == Exclusive
+    settings.SharingMode(MediaCaptureSharingMode::SharedReadOnly);
     settings.MemoryPreference(MediaCaptureMemoryPreference::Cpu);
 
     CaptureSession session;
@@ -671,44 +667,23 @@ int publish(const std::vector<std::wstring>& args)
     if (parentPid != 0)
         parentHandle = OpenProcess(SYNCHRONIZE, FALSE, parentPid);
 
-    // SharedReadOnly delivers frames only while another app is actively using the camera, so
-    // when the camera is idle (the normal solo case) we must open it exclusively to get any
-    // frames at all; if another app already owns the camera, fall back to SharedReadOnly.
+    // Physical cameras must never block OBS/直播伴侣 from opening the same device.
     CaptureSession camera;
-    bool shared = false;
     size_t sourceIndex = 0;
     try
     {
-        camera = openSharedCamera(hstring(device), width, height, fps, false);
+        camera = openSharedCamera(hstring(device), width, height, fps);
     }
     catch (const hresult_error& error)
     {
-        const auto code = error.code();
-        // Any failure on the exclusive attempt (busy, denied, E_FAIL from frame-server quirks)
-        // falls back to SharedReadOnly before giving up.
-        const auto retryShared = code == E_ACCESSDENIED || code == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
-                              || code == HRESULT_FROM_WIN32(ERROR_BUSY) || code == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED
-                              || code == 0xC00D3704  // MF_E_VIDEO_RECORDING_DEVICE_IN_USE
-                              || code == E_FAIL;
-        if (! retryShared) throw;
-        std::cout << "SONOBUS_ERROR=unavailable:exclusive:0x" << std::hex << static_cast<uint32_t>(code)
+        std::cout << "SONOBUS_ERROR=unavailable:shared:0x" << std::hex << static_cast<uint32_t>(error.code())
                   << std::dec << std::endl;
-        try
-        {
-            camera = openSharedCamera(hstring(device), width, height, fps, true);
-        }
-        catch (const hresult_error& sharedError)
-        {
-            std::cout << "SONOBUS_ERROR=unavailable:shared:0x" << std::hex << static_cast<uint32_t>(sharedError.code())
-                      << std::dec << std::endl;
-            return 3;  // avoid rethrow: wmain would print a bare error that overwrites this one
-        }
-        shared = true;
+        return 3;
     }
     startReaderForSource(camera, sourceIndex);
     auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height, camera.mode.fps,
                              maxHeight, maxFps, maxBitrate);
-    std::cout << "capture_mode=" << (shared ? "shared" : "exclusive") << '\n'
+    std::cout << "capture_mode=shared\n"
               << "capture_source=" << sourceIndex << '\n'
               << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height
               << "\ncapture_nominal_fps=" << camera.mode.fps << "\n" << std::flush;

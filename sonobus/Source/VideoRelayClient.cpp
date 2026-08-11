@@ -1084,9 +1084,9 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         return true;
     }
 #if JUCE_WINDOWS
-    // Last resort: some USB cameras cannot initialise MediaCapture/FrameReader at all
-    // (both exclusive and shared attempts fail with E_FAIL). DirectShow works for every UVC
-    // camera, so fall back to ffmpeg dshow capture with libx264.
+    // DirectShow is only for devices explicitly enumerated through DirectShow (normally
+    // virtual cameras). Physical MediaCapture devices must remain SharedReadOnly.
+    if (dshowOnly)
     {
         // dshow: id now carries the ASCII alternative name (@device_sw_...) when available,
         // falling back to the display name, so capture never has to match Chinese names.
