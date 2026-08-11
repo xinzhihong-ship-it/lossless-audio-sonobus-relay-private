@@ -2922,7 +2922,7 @@ const adminPageHtml = String.raw`<!doctype html>
 
     function cameraStatus(control) {
       if (control.error) return control.error;
-      if (!control.online) return control.enabled ? "摄像头已启用，客户端重连后恢复" : "摄像头已关闭";
+      if (!control.online) return "客户端离线，摄像头已自动关闭";
       if (!(control.cameras || []).length) return "未检测到摄像头";
       if (!control.capturing) return control.enabled ? "已下发开启，等待客户端" : "摄像头已关闭";
       const size = control.width && control.height ? control.width + "×" + control.height : "分辨率未知";

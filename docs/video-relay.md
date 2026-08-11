@@ -37,7 +37,7 @@ SonoBus 原有音频 Relay 仍使用 UDP `9000`，协议和行为不变。
 - 控制轮询使用 HMAC-SHA256、时间戳、单调序列号和 nonce 防伪造、防重放。
 - Windows 使用 `MediaCaptureSharingMode::SharedReadOnly` 和 `MediaFrameReader`，不会主动取得摄像头独占权；FFmpeg 只接收 NV12 帧、编码 H.264 并发布 RTSP。
 - `SharedReadOnly` 禁止修改摄像头格式。Windows 在正式发布 helper 中只打开一次当前彩色源，选择当下可共享的最高分辨率×FPS源；后台上限只作用于 FFmpeg 输出，自动按实际源分辨率/FPS计算码率，超出源能力时自动钳制。降分辨率只下采样，降 FPS 只丢帧，绝不放大或补帧。
-- 不再先用独立 helper 进程探测模式再重复打开摄像头；管理员选定的设备被独占、断开或共享模式失效时，客户端不会静默切换其他摄像头，并按最长 30 秒退避重试，同时保留 helper 的结构化错误。
+- 不再先用独立 helper 进程探测模式再重复打开摄像头；管理员选定的设备被独占、断开或共享模式失效时，客户端不会静默切换或自动重试。每次后台开启只尝试一次，客户端掉线或重新打开后自动恢复为关闭，必须由管理员再次开启。
 - macOS 先读取设备实际模式，再按像素面积从高到低验证 60 FPS，绝不静默固定为 `640×360`。
 - Windows/macOS 安装包携带固定、校验过的 FFmpeg；详见 [`ffmpeg-runtime.md`](ffmpeg-runtime.md)。
 - helper 和网络重连均在非音频线程/独立进程完成。
