@@ -2,6 +2,10 @@ import fs from "node:fs";
 
 const sourcePath = new URL("../sonobus/Source/SonobusPluginProcessor.cpp", import.meta.url);
 const source = fs.readFileSync(sourcePath, "utf8");
+const juceThreads = fs.readFileSync(
+  new URL("../sonobus/deps/juce/modules/juce_core/native/juce_Threads_windows.cpp", import.meta.url),
+  "utf8",
+);
 
 function assertContains(name, pattern) {
   if (!pattern.test(source)) {
@@ -49,6 +53,11 @@ assertBlockContains(
     /remote->oursink->invite_source\s*\(\s*endpoint\s*,\s*0\s*,\s*endpoint_send\s*\)/,
   ],
 );
+
+if (!/if\s*\(\s*available\s*==\s*0\s*\)\s*break\s*;/m.test(juceThreads)) {
+  console.error("Missing non-blocking Windows child-process pipe read");
+  process.exitCode = 1;
+}
 
 if (!process.exitCode) {
   console.log("SonoBus relay state checks passed.");
