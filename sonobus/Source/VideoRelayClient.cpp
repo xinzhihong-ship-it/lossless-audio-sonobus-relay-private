@@ -459,7 +459,7 @@ void VideoRelayClient::runVideoLoop()
             {
                 stopPublisher();
                 setStatus(Status::cameraUnavailable, selectedIsMoLiXiu
-                    ? sonobus::video::translated(u8"等待魔力秀选择真实摄像头")
+                    ? sonobus::video::translated(u8"等待魔力秀选择摄像头")
                     : sonobus::video::translated(u8"管理员选择的摄像头当前不可用"));
             }
             else
@@ -1563,14 +1563,18 @@ juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selectio
     if (selector.isEmpty()) return {};
 
     for (const auto& device : devices)
-        if (! device.id.startsWith("dshow:") && device.id.equalsIgnoreCase(selector)) return device.id;
+    {
+        auto deviceSelector = device.id;
+        if (deviceSelector.startsWithIgnoreCase("dshow:")) deviceSelector = deviceSelector.substring(6).trim();
+        if (deviceSelector.equalsIgnoreCase(selector)) return device.id;
+    }
 
     auto findUniqueName = [&devices](const juce::String& name)
     {
         juce::String match;
         for (const auto& device : devices)
         {
-            if (device.id.startsWith("dshow:") || ! device.name.equalsIgnoreCase(name)) continue;
+            if (! device.name.equalsIgnoreCase(name)) continue;
             if (match.isNotEmpty()) return juce::String();
             match = device.id;
         }
