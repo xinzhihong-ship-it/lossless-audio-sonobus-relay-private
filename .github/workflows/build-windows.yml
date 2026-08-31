@@ -124,6 +124,8 @@ jobs:
           foreach ($bridgeFile in $bridgeFiles) {
             if (-not (Test-Path $bridgeFile)) { throw "Missing MoLiXiu bridge output: $bridgeFile" }
           }
+          & "build-molixiu-bridge/Release/SonoBusMoLiXiuBridge.exe" --self-test --dll "build-molixiu-bridge/Release/SonoBusMoLiXiuHook.dll"
+          if ($LASTEXITCODE -ne 0) { throw "MoLiXiu bridge self-test failed: $LASTEXITCODE" }
           $sourceHash = (Get-FileHash -Algorithm SHA256 $env:SONOBUS_FFMPEG_PATH).Hash
           $runtimes = @(
             "sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg.exe",
@@ -186,7 +188,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path installer-input/SonoBus | Out-Null
           Copy-Item -Recurse -Force artifacts/windows-x64/* installer-input/SonoBus/
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            /DSBVERSION="0.1.8" `
+            /DSBVERSION="0.1.9" `
             /DSBASIOSUFFIX="" `
             tools/windows-installer/sonobus-installer.iss
 

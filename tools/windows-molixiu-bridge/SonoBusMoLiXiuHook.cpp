@@ -19,6 +19,11 @@ constexpr SIZE_T kStartCaptureHookLength = 6;
 constexpr SIZE_T kStartCaptureWindowHookLength = 5;
 constexpr SIZE_T kCurrentSolutionHookLength = 5;
 constexpr SIZE_T kIsCaptureingHookLength = 6;
+// ponytail: fixed MoLiXiu 2.0.2111.2402 layout; fail closed for any other binary.
+constexpr DWORD kMoLiXiuImageTimestamp = 0x619e0b61;
+constexpr DWORD kMoLiXiuImageSize = 0x0039b000;
+constexpr SIZE_T kMoLiXiuSharedDataRva = 0x0033db24;
+constexpr SIZE_T kSharedDataPointerOffset = 0x0c;
 
 CRITICAL_SECTION pendingLock;
 HANDLE pendingEvent = nullptr;
@@ -106,8 +111,10 @@ bool copyLegacyWString(const void* object, wchar_t* output, DWORD& length) noexc
     {
         const auto bytes = static_cast<const unsigned char*>(object);
         const auto size = *reinterpret_cast<const DWORD*>(bytes + 16);
+        const auto capacity = *reinterpret_cast<const DWORD*>(bytes + 20);
         if (size == 0 || size > kMaxDeviceChars) return false;
-        const auto* value = size < 16
+        if (capacity < size) return false;
+        const auto* value = capacity < 8
                           ? reinterpret_cast<const wchar_t*>(bytes)
                           : *reinterpret_cast<const wchar_t* const*>(bytes);
         if (value == nullptr) return false;
@@ -122,36 +129,67 @@ bool copyLegacyWString(const void* object, wchar_t* output, DWORD& length) noexc
     }
 }
 
-extern "C" void __cdecl queueLegacyDevice(const void* object) noexcept
+extern "C" bool __cdecl queueLegacyDevice(const void* object) noexcept
 {
-    if (InterlockedCompareExchange(&bridgeReady, 0, 0) == 0) return;
+    if (InterlockedCompareExchange(&bridgeReady, 0, 0) == 0) return false;
     wchar_t value[kMaxDeviceChars + 1] {};
     DWORD length = 0;
-    if (! copyLegacyWString(object, value, length)) return;
+    if (! copyLegacyWString(object, value, length)) return false;
     EnterCriticalSection(&pendingLock);
     if (length == pendingLength && std::memcmp(pendingDevice, value, (length + 1) * sizeof(wchar_t)) == 0)
     {
         LeaveCriticalSection(&pendingLock);
-        return;
+        return true;
     }
     std::memcpy(pendingDevice, value, (length + 1) * sizeof(wchar_t));
     pendingLength = length;
     pendingDirty = true;
     LeaveCriticalSection(&pendingLock);
     SetEvent(pendingEvent);
+    return true;
 }
 
-extern "C" void __cdecl queueCurrentDevice(const void* realCamera) noexcept
+const void* currentCameraFromSharedData(const unsigned char* sharedData) noexcept
 {
-    if (realCamera == nullptr) return;
+    if (sharedData == nullptr) return nullptr;
+    const auto state = *reinterpret_cast<const unsigned char* const*>(sharedData + kSharedDataPointerOffset);
+    return state != nullptr ? *reinterpret_cast<const void* const*>(state) : nullptr;
+}
+
+extern "C" bool __cdecl queueCurrentDevice(const void* realCamera) noexcept
+{
+    if (realCamera == nullptr) return false;
     __try
     {
         const auto internal = *reinterpret_cast<const unsigned char* const*>(realCamera);
         // ponytail: fixed MoLiXiu 2021 private ABI; update this offset with the app version.
-        if (internal != nullptr) queueLegacyDevice(internal + 0xa0);
+        return internal != nullptr && queueLegacyDevice(internal + 0xa0);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+        return false;
+    }
+}
+
+bool queueExistingSelection() noexcept
+{
+    const auto module = GetModuleHandleW(L"molixiudll.dll");
+    if (module == nullptr) return false;
+    __try
+    {
+        const auto base = reinterpret_cast<const unsigned char*>(module);
+        const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+        const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE
+            || nt->FileHeader.TimeDateStamp != kMoLiXiuImageTimestamp
+            || nt->OptionalHeader.SizeOfImage != kMoLiXiuImageSize)
+            return false;
+        return queueCurrentDevice(currentCameraFromSharedData(base + kMoLiXiuSharedDataRva));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
     }
 }
 
@@ -325,6 +363,7 @@ DWORD WINAPI bridgeThread(void*)
                 kIsCaptureingHookLength, isCaptureingExpected, &isCaptureingTrampoline);
 
     InterlockedExchange(&bridgeReady, 1);
+    for (int attempt = 0; attempt < 50 && ! queueExistingSelection(); ++attempt) Sleep(100);
     for (;;)
     {
         if (WaitForSingleObject(pendingEvent, INFINITE) == WAIT_OBJECT_0) copyPendingAndWrite();
@@ -340,4 +379,14 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         CreateThread(nullptr, 0, bridgeThread, nullptr, 0, nullptr);
     }
     return TRUE;
+}
+
+extern "C" __declspec(dllexport) int __cdecl SonoBusMoLiXiuLayoutSelfTest()
+{
+    unsigned char sharedData[sizeof(void*) + kSharedDataPointerOffset] {};
+    unsigned char state[sizeof(void*)] {};
+    int camera = 0;
+    *reinterpret_cast<const unsigned char**>(sharedData + kSharedDataPointerOffset) = state;
+    *reinterpret_cast<const void**>(state) = &camera;
+    return currentCameraFromSharedData(sharedData) == &camera ? 0 : 1;
 }

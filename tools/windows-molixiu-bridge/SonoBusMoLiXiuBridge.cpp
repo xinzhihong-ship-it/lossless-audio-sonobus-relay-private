@@ -90,12 +90,25 @@ int attach(const wchar_t* dllPath)
     CloseHandle(process);
     return waitResult == WAIT_OBJECT_0 && module != 0 ? 0 : 7;
 }
+
+int selfTest(const wchar_t* dllPath)
+{
+    const auto module = dllPath != nullptr ? LoadLibraryW(dllPath) : nullptr;
+    if (module == nullptr) return 8;
+    auto procedure = GetProcAddress(module, "SonoBusMoLiXiuLayoutSelfTest");
+    if (procedure == nullptr) procedure = GetProcAddress(module, "_SonoBusMoLiXiuLayoutSelfTest");
+    const auto check = reinterpret_cast<int (__cdecl*)()>(procedure);
+    return check != nullptr ? check() : 9;
+}
 }
 
 int wmain(int argc, wchar_t** argv)
 {
     const wchar_t* dllPath = nullptr;
+    bool runSelfTest = false;
     for (int index = 1; index + 1 < argc; ++index)
         if (_wcsicmp(argv[index], L"--dll") == 0) dllPath = argv[index + 1];
-    return attach(dllPath);
+    for (int index = 1; index < argc; ++index)
+        if (_wcsicmp(argv[index], L"--self-test") == 0) runSelfTest = true;
+    return runSelfTest ? selfTest(dllPath) : attach(dllPath);
 }
