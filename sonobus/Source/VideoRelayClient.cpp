@@ -461,9 +461,11 @@ void VideoRelayClient::runVideoLoop()
                     setStatus(Status::error, lastError.isNotEmpty() ? lastError : sonobus::video::translated(u8"H.264 编码进程已退出"));
                     hasPublisher = false;
                 }
-                // Do not steal a busy camera. Retry a failed open slowly so the
-                // relay can resume after the other application releases it.
-                const bool retryDue = ! hasPublisher && desired.revision == lastAttemptRevision
+                // Do not steal a busy camera. DirectShow virtual cameras can show
+                // their own modal busy dialog on every open, so a failed virtual
+                // camera open is one-shot until the administrator changes state.
+                const bool retryDue = ! selectedCamera.startsWith("dshow:")
+                                   && ! hasPublisher && desired.revision == lastAttemptRevision
                                    && nowHi >= nextPublisherAttemptMs;
                 if ((! hasPublisher || desiredChanged) && (attemptChanged || retryDue))
                 {
@@ -847,30 +849,12 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
 #if JUCE_WINDOWS
     if (cameraDeviceId.startsWith("dshow:"))
     {
-        const auto dshowDevice = cameraDeviceId.fromFirstOccurrenceOf("dshow:", false, false);
-        juce::ChildProcess probe;
-        const juce::StringArray arguments {
-            ffmpegPath, "-hide_banner", "-loglevel", "info", "-nostdin", "-f", "dshow",
-            "-use_video_device_timestamps", "0", "-i", "video=" + dshowDevice,
-            "-frames:v", "1", "-an", "-f", "null", "-"
-        };
-        if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
-        {
-            error = sonobus::video::translated(u8"无法启动 DirectShow 摄像头探测");
-            return result;
-        }
-        juce::String output;
-        const auto finished = runProbe(probe, 5000, output);
-        const auto mode = sonobus::video::parseDshowCameraMode(output);
-        if (finished && mode.width > 0 && mode.height > 0 && mode.fps > 0.0)
-        {
-            result.add(CameraMode { mode.width, mode.height, mode.fps });
-            return result;
-        }
-        error = cameraFailureMessage(output);
-        if (error.isEmpty())
-            error = finished ? sonobus::video::translated(u8"DirectShow 摄像头没有输出视频帧")
-                             : sonobus::video::translated(u8"DirectShow 摄像头响应超时；已放弃占用");
+        // Do not probe a virtual camera separately: YY/OBS may reject the
+        // second DirectShow graph and display its own busy dialog. The single
+        // publisher below opens the device once and lets the driver choose its
+        // default input mode; this mode is the relay's output target.
+        juce::ignoreUnused(ffmpegPath, error);
+        result.add({ 1280, 720, 30.0 });
         return result;
     }
     juce::ignoreUnused(ffmpegPath);
@@ -1158,8 +1142,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             // rejected with "Malformed dshow input string".
             auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin",
                                                  "-f", "dshow", "-use_video_device_timestamps", "0",
-                                                 "-video_size", juce::String(mode.width) + "x" + juce::String(mode.height),
-                                                 "-framerate", juce::String(mode.fps, 3), "-i", "video=" + dshowDevice };
+                                                 "-i", "video=" + dshowDevice };
             arguments.add("-an");
             if (outputMode.width != mode.width || outputMode.height != mode.height)
                 arguments.addArray({ "-vf", "scale=" + juce::String(outputMode.width) + ":" + juce::String(outputMode.height)
