@@ -36,6 +36,14 @@ try {
     (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusVideoCaptureHelper.exe"),
     (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusVideoCaptureHelper.exe")
   )
+  $molixiuBridge = @(
+    (Join-Path $appDir "SonoBusMoLiXiuBridge.exe"),
+    (Join-Path $appDir "SonoBusMoLiXiuHook.dll"),
+    (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusMoLiXiuBridge.exe"),
+    (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusMoLiXiuHook.dll"),
+    (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusMoLiXiuBridge.exe"),
+    (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusMoLiXiuHook.dll")
+  )
   $required = @(
     (Join-Path $appDir "SonoBus.exe"),
     (Join-Path $appDir "ffmpeg-LICENSE"),
@@ -44,7 +52,7 @@ try {
     (Join-Path $appDir "ffmpeg-RUNTIME.md"),
     (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBus.vst3"),
     (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusInstrument.vst3")
-  ) + $runtimes + $helpers
+  ) + $runtimes + $helpers + $molixiuBridge
 
   foreach ($path in $required) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Installer omitted: $path" }

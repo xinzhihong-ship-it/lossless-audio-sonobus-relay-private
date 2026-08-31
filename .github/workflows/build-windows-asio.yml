@@ -13,6 +13,7 @@ on:
       - ".github/workflows/build-windows-asio.yml"
       - "sonobus/**"
       - "tools/windows-installer/**"
+      - "tools/windows-molixiu-bridge/**"
       - "README.md"
       - "LICENSE"
       - "LICENSE_EXCEPTION"
@@ -125,6 +126,12 @@ jobs:
         working-directory: sonobus
         run: cmake --build build --config Release --parallel
 
+      - name: Build 32-bit MoLiXiu camera bridge
+        shell: pwsh
+        run: |
+          cmake -S tools/windows-molixiu-bridge -B build-molixiu-bridge -G "Visual Studio 17 2022" -A Win32
+          cmake --build build-molixiu-bridge --config Release --parallel
+
       - name: Test video protocol and UTF-8
         shell: pwsh
         working-directory: sonobus
@@ -133,6 +140,13 @@ jobs:
       - name: Verify bundled FFmpeg runtimes
         shell: pwsh
         run: |
+          $bridgeFiles = @(
+            "build-molixiu-bridge/Release/SonoBusMoLiXiuBridge.exe",
+            "build-molixiu-bridge/Release/SonoBusMoLiXiuHook.dll"
+          )
+          foreach ($bridgeFile in $bridgeFiles) {
+            if (-not (Test-Path $bridgeFile)) { throw "Missing MoLiXiu bridge output: $bridgeFile" }
+          }
           $sourceHash = (Get-FileHash -Algorithm SHA256 $env:SONOBUS_FFMPEG_PATH).Hash
           $runtimes = @(
             "sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg.exe",
@@ -178,6 +192,9 @@ jobs:
           Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg.exe artifacts/windows-x64-asio/
           Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg32.exe artifacts/windows-x64-asio/
           Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBusVideoCaptureHelper.exe artifacts/windows-x64-asio/
+          Copy-Item -Force build-molixiu-bridge/Release/SonoBusMoLiXiuBridge.exe,build-molixiu-bridge/Release/SonoBusMoLiXiuHook.dll artifacts/windows-x64-asio/
+          Copy-Item -Force build-molixiu-bridge/Release/SonoBusMoLiXiuBridge.exe,build-molixiu-bridge/Release/SonoBusMoLiXiuHook.dll artifacts/windows-x64-asio/SonoBus.vst3/Contents/x86_64-win/
+          Copy-Item -Force build-molixiu-bridge/Release/SonoBusMoLiXiuBridge.exe,build-molixiu-bridge/Release/SonoBusMoLiXiuHook.dll artifacts/windows-x64-asio/SonoBusInstrument.vst3/Contents/x86_64-win/
           Copy-Item -Force $env:SONOBUS_FFMPEG_LICENSE artifacts/windows-x64-asio/ffmpeg-LICENSE
           Copy-Item -Force $env:SONOBUS_FFMPEG_README artifacts/windows-x64-asio/ffmpeg-README.txt
           Copy-Item -Force $env:SONOBUS_FFMPEG32_LICENSE artifacts/windows-x64-asio/ffmpeg32-LICENSE
@@ -192,7 +209,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path installer-input/SonoBus | Out-Null
           Copy-Item -Recurse -Force artifacts/windows-x64-asio/* installer-input/SonoBus/
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            /DSBVERSION="0.1.7" `
+            /DSBVERSION="0.1.8" `
             /DSBASIOSUFFIX="-ASIO" `
             tools/windows-installer/sonobus-installer.iss
 

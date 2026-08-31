@@ -38,6 +38,8 @@ Source: "{#SourceRoot}\installer-input\SonoBus\SonoBus.exe"; DestDir: "{app}"; C
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusMoLiXiuBridge.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusMoLiXiuHook.dll"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\README.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion isreadme
 Source: "{#SourceRoot}\installer-input\SonoBus\LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\LICENSE_EXCEPTION"; DestDir: "{app}"; Components: app; Flags: ignoreversion
@@ -53,12 +55,16 @@ Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusInstrument.vst3\*"; DestDi
 // VST3 plugins look for the capture helper and ffmpeg next to the plugin binary (the DLL
 // lives in Contents\x86_64-win\ inside the bundle), so ship them in that folder.
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusMoLiXiuBridge.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusMoLiXiuHook.dll"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32-LICENSE"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusMoLiXiuBridge.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusMoLiXiuHook.dll"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
