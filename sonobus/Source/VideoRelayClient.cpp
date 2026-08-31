@@ -864,7 +864,7 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
         const auto mode = sonobus::video::parseDshowCameraMode(output);
         if (finished && mode.width > 0 && mode.height > 0 && mode.fps > 0.0)
         {
-            result.add(mode);
+            result.add(CameraMode { mode.width, mode.height, mode.fps });
             return result;
         }
         error = cameraFailureMessage(output);
