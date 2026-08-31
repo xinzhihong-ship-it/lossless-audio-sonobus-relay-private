@@ -3,6 +3,8 @@
 
 #include "VideoRelaySupport.h"
 
+#include <regex>
+
 namespace sonobus::video
 {
 namespace
@@ -36,6 +38,15 @@ juce::Array<CameraMode> parseWindowsCameraModes(const juce::String& output)
             modes.add({ values[1].getIntValue(), values[2].getIntValue(), values[3].getDoubleValue() });
     }
     return modes;
+}
+
+CameraMode parseDshowCameraMode(const juce::String& output)
+{
+    const std::regex modePattern(R"((\d+)x(\d+),\s*([0-9]+(?:\.[0-9]+)?)\s*fps)");
+    const auto text = output.toStdString();
+    std::smatch match;
+    if (! std::regex_search(text, match, modePattern)) return {};
+    return { std::stoi(match[1].str()), std::stoi(match[2].str()), std::stod(match[3].str()) };
 }
 
 CameraMode constrainOutputMode(CameraMode capture, int maxHeight, double maxFps)

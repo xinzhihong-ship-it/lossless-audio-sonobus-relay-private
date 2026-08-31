@@ -91,6 +91,7 @@ private:
                       CameraMode mode,
                       const juce::String& encoder,
                       juce::String& error) const;
+    bool publisherNeedsRelease() const;
     bool startPublisher(const juce::String& ffmpegPath,
                         const juce::Array<CameraDevice>& devices,
                         const DesiredState& desired,
@@ -147,6 +148,9 @@ private:
     juce::uint64 sequence = 0;
     juce::String progressBuffer;
     bool pairingRejected = false;
+    juce::uint32 publisherStartedAt = 0;
+    bool publisherHasFrames = false;
+    bool publisherReleaseRequested = false;
 
     std::atomic<Status> status { Status::idle };
     std::unique_ptr<juce::ChildProcess> publisher;

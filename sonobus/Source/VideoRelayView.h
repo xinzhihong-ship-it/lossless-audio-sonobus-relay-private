@@ -24,7 +24,7 @@ public:
 
         infoLabel.setFont(13.0f);
         infoLabel.setJustificationType(Justification::centred);
-        infoLabel.setText(sonobus::video::translated(u8"客户端会自动申请授权；摄像头开关和设备选择仅由后台管理员控制。"), dontSendNotification);
+        infoLabel.setText(sonobus::video::translated(u8"视频中继由后台管理员控制。"), dontSendNotification);
 
         statusLabel.setFont(13.0f);
         statusLabel.setJustificationType(Justification::centredLeft);
@@ -83,9 +83,7 @@ public:
         const auto group = processor.getCurrentJoinedGroup();
         const auto paired = processor.hasVideoPairing();
         if (paired) localMessage.clear();
-        auto statusText = sonobus::video::translated(u8"状态：") + processor.getVideoStatusText();
-        const auto camera = processor.getVideoCameraName();
-        if (camera.isNotEmpty()) statusText += sonobus::video::utf8(u8" · ") + camera;
+        auto statusText = sonobus::video::translated(u8"视频中继由后台控制");
         if (localMessage.isNotEmpty()) statusText += "\n" + localMessage;
         statusLabel.setText(statusText, dontSendNotification);
 

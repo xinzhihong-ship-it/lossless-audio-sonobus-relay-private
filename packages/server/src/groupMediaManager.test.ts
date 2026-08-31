@@ -15,12 +15,13 @@ const config: GroupMediaManagerConfig = {
   muxerPassword: "secret:with@chars"
 };
 
-test("group muxer copies H264 and adds low-latency Opus on stable RTSP paths", () => {
+test("group muxer normalizes H264 and adds low-latency Opus on stable RTSP paths", () => {
   const args = buildFfmpegArgs(config, "studio");
   const joined = args.join(" ");
-  assert.match(joined, /-c:v copy/);
+  assert.match(joined, /-c:v libx264 -preset ultrafast -tune zerolatency/);
+  assert.match(joined, /-pix_fmt yuv420p -profile:v baseline -x264-params repeat-headers=1/);
   assert.match(joined, /-c:a libopus -b:a 160k -application lowdelay -frame_duration 10/);
   assert.match(joined, /rtsp:\/\/media-muxer:secret%3Awith%40chars@mediamtx:8554\/ingest\/SB_studio/);
   assert.match(joined, /rtsp:\/\/media-muxer:secret%3Awith%40chars@mediamtx:8554\/SB_studio$/);
-  assert.doesNotMatch(joined, /libx264|jpeg|mjpeg/i);
+  assert.doesNotMatch(joined, /jpeg|mjpeg/i);
 });

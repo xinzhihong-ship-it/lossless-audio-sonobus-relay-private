@@ -316,6 +316,7 @@ void VideoRelayClient::runVideoLoop()
     DesiredState runningDesired;
     CameraMode runningMode;
     juce::String lastAttemptRevision;
+    double nextPublisherAttemptMs = 0.0;
     double nextDeviceRefreshMs = 0.0;
     int deviceRefreshDelayMs = 1000;
     while (! threadShouldExit())
@@ -408,6 +409,7 @@ void VideoRelayClient::runVideoLoop()
             runningDesired = desired;
             runningMode = {};
             lastAttemptRevision.clear();
+            nextPublisherAttemptMs = 0.0;
             setStatus(Status::waitingForAdmin);
         }
         else if (desired.cameraDeviceId.isEmpty())
@@ -455,16 +457,19 @@ void VideoRelayClient::runVideoLoop()
                     readPublisherProgress();
                     stopPublisher();
                     runningMode = {};
+                    nextPublisherAttemptMs = nowHi + 5000.0;
                     setStatus(Status::error, lastError.isNotEmpty() ? lastError : sonobus::video::translated(u8"H.264 编码进程已退出"));
                     hasPublisher = false;
                 }
-                // One physical-camera open per admin revision. A failed camera
-                // stays stopped until the admin closes/reopens or changes a
-                // setting, avoiding repeated Windows camera reconnects.
-                if ((! hasPublisher || desiredChanged) && attemptChanged)
+                // Do not steal a busy camera. Retry a failed open slowly so the
+                // relay can resume after the other application releases it.
+                const bool retryDue = ! hasPublisher && desired.revision == lastAttemptRevision
+                                   && nowHi >= nextPublisherAttemptMs;
+                if ((! hasPublisher || desiredChanged) && (attemptChanged || retryDue))
                 {
                     stopPublisher();
                     lastAttemptRevision = desired.revision;
+                    nextPublisherAttemptMs = nowHi + 5000.0;
                     setStatus(Status::startingCamera);
                     auto mode = selectedCamera == runningDesired.cameraDeviceId && runningMode.isValid()
                                   ? runningMode
@@ -482,6 +487,7 @@ void VideoRelayClient::runVideoLoop()
                         {
                             runningDesired = launchDesired;
                             runningMode = mode;
+                            nextPublisherAttemptMs = 0.0;
 #if ! JUCE_WINDOWS
                             setStatus(Status::online);
 #endif
@@ -504,6 +510,13 @@ void VideoRelayClient::runVideoLoop()
         for (int waited = 0; waited < sleepMs && ! threadShouldExit(); waited += 100)
         {
             readPublisherProgress();
+            if (publisherNeedsRelease())
+            {
+                stopPublisher();
+                runningMode = {};
+                nextPublisherAttemptMs = juce::Time::getMillisecondCounterHiRes() + 5000.0;
+                setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"摄像头未输出有效视频帧或被其他程序占用，已释放摄像头"));
+            }
             wait(juce::jmin(100, sleepMs - waited));
         }
         logMsg("sleep done");
@@ -741,7 +754,8 @@ juce::var VideoRelayClient::makeStatusPayload() const
         cameraList.add(juce::var(item.release()));
     }
     result->setProperty("cameras", cameraList);
-    result->setProperty("capturing", getStatus() == Status::online && publisher != nullptr && publisher->isRunning());
+    result->setProperty("capturing", getStatus() == Status::online && publisher != nullptr && publisher->isRunning()
+                                      && publisherHasFrames && ! publisherReleaseRequested);
     result->setProperty("cameraDeviceId", activeCameraId);
     result->setProperty("cameraName", activeCamera);
     result->setProperty("codec", activeEncoder);
@@ -831,6 +845,34 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
 {
     juce::Array<CameraMode> result;
 #if JUCE_WINDOWS
+    if (cameraDeviceId.startsWith("dshow:"))
+    {
+        const auto dshowDevice = cameraDeviceId.fromFirstOccurrenceOf("dshow:", false, false);
+        juce::ChildProcess probe;
+        const juce::StringArray arguments {
+            ffmpegPath, "-hide_banner", "-loglevel", "info", "-nostdin", "-f", "dshow",
+            "-use_video_device_timestamps", "0", "-i", "video=" + dshowDevice,
+            "-frames:v", "1", "-an", "-f", "null", "-"
+        };
+        if (! probe.start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            error = sonobus::video::translated(u8"无法启动 DirectShow 摄像头探测");
+            return result;
+        }
+        juce::String output;
+        const auto finished = runProbe(probe, 5000, output);
+        const auto mode = sonobus::video::parseDshowCameraMode(output);
+        if (finished && mode.width > 0 && mode.height > 0 && mode.fps > 0.0)
+        {
+            result.add(mode);
+            return result;
+        }
+        error = cameraFailureMessage(output);
+        if (error.isEmpty())
+            error = finished ? sonobus::video::translated(u8"DirectShow 摄像头没有输出视频帧")
+                             : sonobus::video::translated(u8"DirectShow 摄像头响应超时；已放弃占用");
+        return result;
+    }
     juce::ignoreUnused(ffmpegPath);
     const auto helper = findWindowsCaptureHelper();
     juce::ChildProcess probe;
@@ -891,6 +933,18 @@ VideoRelayClient::CameraMode VideoRelayClient::findPreferredCameraMode(const juc
                                                                     const juce::String& cameraDeviceId)
 {
 #if JUCE_WINDOWS
+    if (cameraDeviceId.startsWith("dshow:"))
+    {
+        juce::String modeError;
+        const auto modes = getPreferredCameraModes(ffmpegPath, cameraDeviceId, modeError);
+        if (! modes.isEmpty()) return modes[0];
+        if (modeError.isNotEmpty())
+        {
+            const juce::ScopedLock lock(stateLock);
+            lastError = modeError;
+        }
+        return {};
+    }
     // The helper selects the actual current SharedReadOnly source once, inside --publish.
     juce::ignoreUnused(ffmpegPath, cameraDeviceId);
     return { 1280, 720, 30.0 };
@@ -1079,6 +1133,9 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             actualFps = 0.0;
             actualBitrate = 0;
             progressBuffer.clear();
+            publisherStartedAt = juce::Time::getMillisecondCounter();
+            publisherHasFrames = false;
+            publisherReleaseRequested = false;
             lastError.clear();
         }
         return true;
@@ -1099,17 +1156,22 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             auto process = std::make_unique<juce::ChildProcess>();
             // ffmpeg dshow requires the video= prefix; bare @device_sw_... paths are
             // rejected with "Malformed dshow input string".
-            auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "error", "-nostdin",
-                                                 "-f", "dshow", "-i", "video=" + dshowDevice };
+            auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin",
+                                                 "-f", "dshow", "-use_video_device_timestamps", "0",
+                                                 "-video_size", juce::String(mode.width) + "x" + juce::String(mode.height),
+                                                 "-framerate", juce::String(mode.fps, 3), "-i", "video=" + dshowDevice };
             arguments.add("-an");
-            arguments.addArray({ "-fps_mode", "passthrough", "-c:v", "libx264" });
+            if (outputMode.width != mode.width || outputMode.height != mode.height)
+                arguments.addArray({ "-vf", "scale=" + juce::String(outputMode.width) + ":" + juce::String(outputMode.height)
+                                           + ":flags=fast_bilinear" });
+            arguments.addArray({ "-r", juce::String(outputMode.fps, 3), "-fps_mode", "cfr", "-c:v", "libx264" });
             arguments.addArray(encoderArguments("libx264"));
-            const auto automaticBitrate = bitrateFor(mode.width, mode.height);
+            const auto automaticBitrate = bitrateFor(outputMode.width, outputMode.height);
             const auto bitrate = desired.maxBitrate > 0 ? juce::jmin(desired.maxBitrate, automaticBitrate) : automaticBitrate;
-            const auto gop = juce::jmax(1, juce::roundToInt(mode.fps));
+            const auto gop = juce::jmax(1, juce::roundToInt(outputMode.fps));
             arguments.addArray({ "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-bf", "0", "-g", juce::String(gop),
                                  "-b:v", juce::String(bitrate), "-maxrate", juce::String(bitrate),
-                                 "-bufsize", juce::String(bitrate / 2), "-nostats" });
+                                 "-bufsize", juce::String(bitrate / 2), "-progress", "pipe:1", "-nostats" });
             juce::String localHost, localPairingId;
             juce::MemoryBlock localKey;
             {
@@ -1138,11 +1200,11 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
                     if (lock.isLocked())
                     {
                         publisher = std::move(process);
-                        publisherProgressEnabled = false;
+                        publisherProgressEnabled = true;
                         activeCameraId = desired.cameraDeviceId;
                         activeCamera = cameraName;
                         activeEncoder = "libx264";
-                        captureMode = {};
+                        captureMode = mode;
                         activeMaxHeight = desired.maxHeight;
                         activeMaxFps = desired.maxFps;
                         activeMaxBitrate = desired.maxBitrate;
@@ -1151,8 +1213,10 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
                         actualFps = 0.0;
                         actualBitrate = 0;
                         progressBuffer.clear();
+                        publisherStartedAt = juce::Time::getMillisecondCounter();
+                        publisherHasFrames = false;
+                        publisherReleaseRequested = false;
                         lastError.clear();
-                        status.store(Status::online);
                         stored = true;
                         break;
                     }
@@ -1216,6 +1280,9 @@ void VideoRelayClient::stopPublisher()
     activeMaxFps = 0.0;
     activeMaxBitrate = 0;
     progressBuffer.clear();
+    publisherStartedAt = 0;
+    publisherHasFrames = false;
+    publisherReleaseRequested = false;
 }
 
 void VideoRelayClient::readPublisherProgress()
@@ -1240,10 +1307,17 @@ void VideoRelayClient::readPublisherProgress()
             captureFps = line.fromFirstOccurrenceOf("=", false, false).getDoubleValue();
             if (captureFps > 0.5)
             {
+                publisherHasFrames = true;
                 captureMode.fps = captureFps;
                 lastError.clear();
                 status.store(Status::online);
             }
+        }
+        else if (line.startsWith("frame=") && line.fromFirstOccurrenceOf("=", false, false).getIntValue() > 0)
+        {
+            publisherHasFrames = true;
+            lastError.clear();
+            status.store(Status::online);
         }
         else if (line.startsWith("fps="))
         {
@@ -1258,6 +1332,11 @@ void VideoRelayClient::readPublisherProgress()
             if (value.isNotEmpty()) actualBitrate = juce::roundToInt(value.getDoubleValue() * 1000.0);
         }
         if (line.startsWith("SONOBUS_ERROR=")) lastError = cameraFailureMessage(line);
+        else if (sonobus::video::classifyCameraFailure(line) == sonobus::video::CameraFailure::busy)
+        {
+            publisherReleaseRequested = true;
+            lastError = cameraFailureMessage(line);
+        }
         else if (line.startsWith("source_candidate=") || line.startsWith("capture_source="))
             lastError = line;  // keep camera-source diagnostics visible in the admin UI
         else if (! line.containsChar('=') && line.isNotEmpty()) lastError = line.substring(0, 500);
@@ -1270,6 +1349,17 @@ void VideoRelayClient::readPublisherProgress()
         activeDesired.maxBitrate = activeMaxBitrate;
         activeMode = outputModeFor(captureMode, activeDesired);
     }
+}
+
+bool VideoRelayClient::publisherNeedsRelease() const
+{
+    const juce::ScopedLock lock(stateLock);
+    if (publisher == nullptr || ! publisher->isRunning()) return false;
+    if (publisherReleaseRequested) return true;
+    const auto firstFrameTimeoutMs = activeCameraId.startsWith("dshow:") ? 5000u : 35000u;
+    return publisherStartedAt != 0
+        && ! publisherHasFrames
+        && juce::Time::getMillisecondCounter() - publisherStartedAt >= firstFrameTimeoutMs;
 }
 
 juce::String VideoRelayClient::findFfmpeg() const

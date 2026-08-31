@@ -24,11 +24,16 @@ int main()
         "SONOBUS_MODE\t320\t240\t0\r\n");
     const auto devices = sonobus::video::parseWindowsCameraDevices(deviceFixture);
     const auto modes = sonobus::video::parseWindowsCameraModes(deviceFixture);
+    const auto dshowMode = sonobus::video::parseDshowCameraMode(
+        "Input #0, dshow, from 'video=@device_sw_...':\n"
+        "Stream #0:0: Video: rawvideo, bgr24, 1920x1080, 25 fps, 25 tbr\n");
     bool ok = expect(devices.size() == 2, "helper protocol did not find two video devices");
     ok &= expect(devices.size() > 0 && devices[0].id == "group-id-1", "camera source-group ID was lost");
     ok &= expect(devices.size() > 0 && devices[0].name == "Integrated Camera", "friendly camera name was lost");
     ok &= expect(modes.size() == 3 && modes[0].fps >= 59.0 && modes[1].fps == 30.0 && modes[2].fps == 15.0,
                  "helper protocol did not preserve real source FPS modes or accepted an invalid mode");
+    ok &= expect(dshowMode.width == 1920 && dshowMode.height == 1080 && dshowMode.fps == 25.0,
+                 "DirectShow probe did not preserve the actual input mode");
     const auto limited = sonobus::video::constrainOutputMode({ 1920, 1080, 59.94 }, 720, 30.0);
     ok &= expect(limited.width == 1280 && limited.height == 720 && limited.fps == 30.0,
                  "output limits did not downscale and drop FPS without upsampling");
