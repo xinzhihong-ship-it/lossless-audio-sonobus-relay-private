@@ -1514,7 +1514,7 @@ void VideoRelayClient::attachMoLiXiuBridge()
 {
     const auto injector = findWindowsMoLiXiuBridge();
     if (injector.isEmpty()) return;
-    const auto hook = injector.getSiblingFile("SonoBusMoLiXiuHook.dll");
+    const auto hook = juce::File(injector).getSiblingFile("SonoBusMoLiXiuHook.dll");
     juce::ChildProcess process;
     if (! process.start({ injector, "--attach", "--dll", hook.getFullPathName() },
                         juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
