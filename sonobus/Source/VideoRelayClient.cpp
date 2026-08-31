@@ -886,7 +886,7 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
     if (! runProbe(probe, 15000, outputText))
         error = sonobus::video::translated(u8"读取 Windows 共享摄像头模式超时");
     for (const auto& mode : sonobus::video::parseWindowsCameraModes(outputText))
-        result.addIfNotAlreadyThere({ mode.width, mode.height, mode.fps });
+        result.addIfNotAlreadyThere(CameraMode { mode.width, mode.height, mode.fps });
     if (result.isEmpty() && error.isEmpty())
     {
         const auto failure = cameraFailureMessage(outputText);
