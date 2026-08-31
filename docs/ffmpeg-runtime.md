@@ -20,8 +20,11 @@ The source archive and complete reproducible configuration are available from th
 - Archive: <https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip>
 - Archive SHA-256: `04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4`
 - FFmpeg source revision reported by the distributor: <https://github.com/FFmpeg/FFmpeg/commit/db69d06eee>
-- Capture boundary: `SonoBusVideoCaptureHelper.exe` uses Windows `MediaCapture` in `SharedReadOnly` mode and writes NV12 to FFmpeg stdin; FFmpeg never opens DirectShow or owns the camera.
+- Physical-camera boundary: `SonoBusVideoCaptureHelper.exe` uses Windows `MediaCapture` in `SharedReadOnly` mode and writes NV12 to the 64-bit FFmpeg stdin; that path never gives FFmpeg ownership of a physical camera.
+- Legacy virtual-camera fallback: packages also include `ffmpeg32.exe`, a pinned Win32 build for 32-bit DirectShow filters such as older virtual-camera drivers. Only a selected `dshow:` device uses this process; the 64-bit VST remains a 64-bit plugin.
+- Win32 archive: <https://github.com/Defisym/FFmpeg-Builds-Win32/releases/download/autobuild-2026-08-30-16-13/ffmpeg-n7.1.5-18-g3978a28d5b-win32-gpl-7.1.zip>
+- Win32 archive SHA-256: `e636ed7f44a3f600d7a80370bc655593caf31720e2c4051b18a61d2427ad5ca9`
 - Required FFmpeg path: rawvideo/NV12 input, H.264 encoder, and RTSP/TCP muxer.
-- License: GPL-3.0; the unmodified distributor `LICENSE` and `README.txt` are included with every Windows package.
+- License: GPL-3.0; the unmodified distributor `LICENSE` and `LICENSE.txt` are included with every Windows package.
 
 The Windows runtime is distributed alongside GPLv3 SonoBus. The included distributor README records its build configuration, external libraries, versions, and corresponding source revision.

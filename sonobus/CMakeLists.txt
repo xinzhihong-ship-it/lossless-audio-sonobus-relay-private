@@ -19,6 +19,7 @@ endif()
 option(UniversalBinary "Build universal binary for mac" ON)
 option(SONOBUS_ENABLE_ASIO "Enable ASIO support on Windows. Requires Steinberg ASIO SDK at ../asiosdk/common." ON)
 set(SONOBUS_FFMPEG_PATH "" CACHE FILEPATH "Bundled FFmpeg executable for H.264 camera publishing")
+set(SONOBUS_FFMPEG32_PATH "" CACHE FILEPATH "Optional 32-bit FFmpeg executable for legacy DirectShow cameras")
 option(SONOBUS_BUILD_VIDEO_TESTS "Build the camera parser and UTF-8 self-check" OFF)
 
 if (APPLE)
@@ -516,6 +517,18 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
                             "$<TARGET_FILE_DIR:${target_name}_${format_target}>/${SONOBUS_FFMPEG_NAME}"
                         COMMENT "Bundling FFmpeg H.264 camera runtime")
                 endif()
+            endif()
+        endforeach()
+    endif()
+
+    if(WIN32 AND SONOBUS_FFMPEG32_PATH AND EXISTS "${SONOBUS_FFMPEG32_PATH}")
+        foreach(format_target ${formats})
+            if(TARGET ${target_name}_${format_target})
+                add_custom_command(TARGET ${target_name}_${format_target} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${SONOBUS_FFMPEG32_PATH}"
+                        "$<TARGET_FILE_DIR:${target_name}_${format_target}>/ffmpeg32.exe"
+                    COMMENT "Bundling 32-bit FFmpeg for legacy DirectShow cameras")
             endif()
         endforeach()
     endif()

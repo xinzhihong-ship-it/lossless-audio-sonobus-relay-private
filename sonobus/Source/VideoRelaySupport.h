@@ -11,6 +11,8 @@ struct CameraDevice
 {
     juce::String id;
     juce::String name;
+    // Internal capture detail; never included in the status payload.
+    juce::String captureFfmpegPath;
 };
 
 struct CameraMode

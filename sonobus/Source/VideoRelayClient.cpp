@@ -784,31 +784,57 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
 {
     juce::Array<CameraDevice> result;
 #if JUCE_WINDOWS
-    juce::ignoreUnused(ffmpegPath);
+    error.clear();
     const auto helper = findWindowsCaptureHelper();
     if (helper.isEmpty())
     {
         error = sonobus::video::translated(u8"安装包中缺少 Windows 共享摄像头运行时");
         return result;
     }
-    juce::ChildProcess probe;
-    // --ffmpeg lets the helper itself enumerate DirectShow devices (physical UVC cameras
-    // plus virtual cameras from OBS/YY) inside one trusted, already-allowed process.
-    if (! probe.start({ helper, "--list", "--ffmpeg", ffmpegPath }, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    juce::String firstError;
+    const auto appendDevices = [&](const juce::String& runtimePath)
     {
-        error = sonobus::video::translated(u8"无法启动 Windows 共享摄像头枚举");
-        return result;
-    }
-    juce::String output;
-    if (! runProbe(probe, 15000, output))
-        error = sonobus::video::translated(u8"Windows 共享摄像头枚举超时");
-    for (const auto& device : sonobus::video::parseWindowsCameraDevices(output))
-        result.add({ device.id, device.name });
-    if (result.isEmpty() && error.isEmpty())
-    {
-        const auto failure = cameraFailureMessage(output);
-        error = failure.isNotEmpty() ? failure : sonobus::video::translated(u8"未检测到摄像头");
-    }
+        juce::ChildProcess probe;
+        // --ffmpeg lets the helper enumerate DirectShow devices inside one trusted,
+        // already-allowed process. Try both x64 and x86 FFmpeg so legacy 32-bit
+        // virtual-camera filters remain usable from the 64-bit VST.
+        if (! probe.start({ helper, "--list", "--ffmpeg", runtimePath },
+                          juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            if (firstError.isEmpty()) firstError = sonobus::video::translated(u8"无法启动 Windows 共享摄像头枚举");
+            return;
+        }
+        juce::String output;
+        if (! runProbe(probe, 15000, output) && firstError.isEmpty())
+            firstError = sonobus::video::translated(u8"Windows 共享摄像头枚举超时");
+        for (const auto& device : sonobus::video::parseWindowsCameraDevices(output))
+        {
+            bool duplicate = false;
+            for (auto& existing : result)
+            {
+                if (existing.id != device.id) continue;
+                // If a filter is visible to both registrations, prefer the x86
+                // runtime because the legacy virtual-camera DLL is x86 in-process.
+                if (device.id.startsWith("dshow:") && runtimePath != ffmpegPath)
+                    existing.captureFfmpegPath = runtimePath;
+                duplicate = true;
+                break;
+            }
+            if (! duplicate) result.add({ device.id, device.name, runtimePath });
+        }
+        if (result.isEmpty() && firstError.isEmpty())
+        {
+            const auto failure = cameraFailureMessage(output);
+            if (failure.isNotEmpty()) firstError = failure;
+        }
+    };
+
+    appendDevices(ffmpegPath);
+    const auto ffmpeg32Path = findFfmpeg32();
+    if (ffmpeg32Path.isNotEmpty() && ffmpeg32Path != ffmpegPath)
+        appendDevices(ffmpeg32Path);
+    if (result.isEmpty())
+        error = firstError.isNotEmpty() ? firstError : sonobus::video::translated(u8"未检测到摄像头");
 #elif JUCE_MAC
     const juce::StringArray arguments { ffmpegPath, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", "" };
     juce::ChildProcess probe;
@@ -1033,8 +1059,17 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
                                       CameraMode mode)
 {
     const auto outputMode = outputModeFor(mode, desired);
+    juce::String captureFfmpegPath = ffmpegPath;
+    for (const auto& device : devices)
+    {
+        if (device.id == desired.cameraDeviceId && device.captureFfmpegPath.isNotEmpty())
+        {
+            captureFfmpegPath = device.captureFfmpegPath;
+            break;
+        }
+    }
     logMsg("startPublisher camera=" + desired.cameraDeviceId + " encoders probe begin");
-    const auto encoders = availableEncoders(ffmpegPath);
+    const auto encoders = availableEncoders(captureFfmpegPath);
     logMsg("startPublisher encoders=" + juce::String(encoders.size()));
 #if JUCE_WINDOWS
     const auto encoderProbeMode = outputMode;
@@ -1065,14 +1100,14 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         // below already falls through to the next encoder on failure; libx264 is built-in.
 #else
         juce::String probeError;
-        if (! probeEncoder(ffmpegPath, desired.cameraDeviceId, encoderProbeMode, encoder, probeError))
+        if (! probeEncoder(captureFfmpegPath, desired.cameraDeviceId, encoderProbeMode, encoder, probeError))
         {
             if (launchErrors.isEmpty()) launchErrors = probeError;
             continue;
         }
 #endif
         auto process = std::make_unique<juce::ChildProcess>();
-        const auto arguments = publisherArguments(ffmpegPath, desired.cameraDeviceId, mode, encoder, desired);
+        const auto arguments = publisherArguments(captureFfmpegPath, desired.cameraDeviceId, mode, encoder, desired);
         if (! process->start(arguments, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
         {
             if (launchErrors.isEmpty())
@@ -1140,7 +1175,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             auto process = std::make_unique<juce::ChildProcess>();
             // ffmpeg dshow requires the video= prefix; bare @device_sw_... paths are
             // rejected with "Malformed dshow input string".
-            auto arguments = juce::StringArray { ffmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin",
+            auto arguments = juce::StringArray { captureFfmpegPath, "-hide_banner", "-loglevel", "warning", "-nostdin",
                                                  "-f", "dshow", "-use_video_device_timestamps", "0",
                                                  "-i", "video=" + dshowDevice };
             arguments.add("-an");
@@ -1234,7 +1269,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         if (launchErrors.isEmpty() && dshowOnly)
             launchErrors = sonobus::video::translated(u8"DirectShow 采集启动失败");
         if (launchErrors.isEmpty() && encoders.isEmpty())
-            launchErrors = sonobus::video::translated(u8"FFmpeg 未检测到 H.264 编码器：") + ffmpegPath;
+            launchErrors = sonobus::video::translated(u8"FFmpeg 未检测到 H.264 编码器：") + captureFfmpegPath;
         lastError = launchErrors.isNotEmpty() ? launchErrors
             : sonobus::video::translated(u8"视频采集启动失败");
     }
@@ -1377,6 +1412,25 @@ juce::String VideoRelayClient::findFfmpeg() const
 #if JUCE_MAC
     const auto resources = module.getParentDirectory().getSiblingFile("Resources").getChildFile(fileName);
     if (resources.existsAsFile()) return resources.getFullPathName();
+#endif
+    return {};
+}
+
+juce::String VideoRelayClient::findFfmpeg32() const
+{
+#if JUCE_WINDOWS
+    const auto overridePath = juce::SystemStats::getEnvironmentVariable("SONOBUS_FFMPEG32_PATH", {});
+    if (overridePath.isNotEmpty() && juce::File(overridePath).existsAsFile()) return overridePath;
+    const auto module = moduleFile();
+    const auto sibling = module.getSiblingFile("ffmpeg32.exe");
+    if (sibling.existsAsFile()) return sibling.getFullPathName();
+    for (auto directory = module.getParentDirectory();
+         directory != directory.getParentDirectory();
+         directory = directory.getParentDirectory())
+    {
+        const auto candidate = directory.getChildFile("ffmpeg32.exe");
+        if (candidate.existsAsFile()) return candidate.getFullPathName();
+    }
 #endif
     return {};
 }

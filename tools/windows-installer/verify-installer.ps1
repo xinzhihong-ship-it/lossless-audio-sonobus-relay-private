@@ -25,8 +25,11 @@ try {
 
   $runtimes = @(
     (Join-Path $appDir "ffmpeg.exe"),
+    (Join-Path $appDir "ffmpeg32.exe"),
     (Join-Path $pluginDirs[0] "Contents/x86_64-win/ffmpeg.exe"),
-    (Join-Path $pluginDirs[1] "Contents/x86_64-win/ffmpeg.exe")
+    (Join-Path $pluginDirs[0] "Contents/x86_64-win/ffmpeg32.exe"),
+    (Join-Path $pluginDirs[1] "Contents/x86_64-win/ffmpeg.exe"),
+    (Join-Path $pluginDirs[1] "Contents/x86_64-win/ffmpeg32.exe")
   )
   $helpers = @(
     (Join-Path $appDir "SonoBusVideoCaptureHelper.exe"),
@@ -36,6 +39,7 @@ try {
   $required = @(
     (Join-Path $appDir "SonoBus.exe"),
     (Join-Path $appDir "ffmpeg-LICENSE"),
+    (Join-Path $appDir "ffmpeg32-LICENSE"),
     (Join-Path $appDir "ffmpeg-README.txt"),
     (Join-Path $appDir "ffmpeg-RUNTIME.md"),
     (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBus.vst3"),
@@ -47,9 +51,15 @@ try {
   }
 
   $sourceHash = (Get-FileHash -Algorithm SHA256 $env:SONOBUS_FFMPEG_PATH).Hash
-  foreach ($runtime in $runtimes) {
+  foreach ($runtime in $runtimes | Where-Object { $_ -notlike "*ffmpeg32.exe" }) {
     if ((Get-FileHash -Algorithm SHA256 $runtime).Hash -ne $sourceHash) {
       throw "Installed FFmpeg checksum mismatch: $runtime"
+    }
+  }
+  $sourceHash32 = (Get-FileHash -Algorithm SHA256 $env:SONOBUS_FFMPEG32_PATH).Hash
+  foreach ($runtime in $runtimes | Where-Object { $_ -like "*ffmpeg32.exe" }) {
+    if ((Get-FileHash -Algorithm SHA256 $runtime).Hash -ne $sourceHash32) {
+      throw "Installed 32-bit FFmpeg checksum mismatch: $runtime"
     }
   }
 

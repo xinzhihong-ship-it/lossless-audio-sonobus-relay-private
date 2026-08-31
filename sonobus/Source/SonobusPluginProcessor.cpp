@@ -7580,6 +7580,11 @@ void SonobusAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBloc
     }
 
     sendRemotePeerInfoUpdate();
+
+    // A VST host can keep the processor alive after stopping audio. Do not keep
+    // the camera publisher alive across the next host resource cycle.
+    if (! JUCEApplicationBase::isStandaloneApp())
+        restartVideoSender();
 }
 
 void SonobusAudioProcessor::setupSourceFormatsForAll()
@@ -7662,6 +7667,8 @@ void SonobusAudioProcessor::releaseResources()
 {
     // When playback stops, you can use this as an opportunity to free up any
     // spare memory, etc.
+    if (! JUCEApplicationBase::isStandaloneApp())
+        stopVideoSender();
     mTransportSource.releaseResources();
     soundboardChannelProcessor->releaseResources();
 }

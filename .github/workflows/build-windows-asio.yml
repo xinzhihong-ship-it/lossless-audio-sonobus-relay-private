@@ -61,6 +61,29 @@ jobs:
           "SONOBUS_FFMPEG_LICENSE=$($license.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
           "SONOBUS_FFMPEG_README=$($readme.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+          $x86Tag = "autobuild-2026-08-30-16-13"
+          $x86ArchiveName = "ffmpeg-n7.1.5-18-g3978a28d5b-win32-gpl-7.1.zip"
+          $x86Expected = "e636ed7f44a3f600d7a80370bc655593caf31720e2c4051b18a61d2427ad5ca9"
+          $x86Archive = Join-Path $env:RUNNER_TEMP $x86ArchiveName
+          $x86Extract = Join-Path $env:RUNNER_TEMP "ffmpeg-win32"
+          Invoke-WebRequest -Uri "https://github.com/Defisym/FFmpeg-Builds-Win32/releases/download/$x86Tag/$x86ArchiveName" -OutFile $x86Archive
+          $x86Actual = (Get-FileHash -Algorithm SHA256 $x86Archive).Hash.ToLowerInvariant()
+          if ($x86Actual -ne $x86Expected) { throw "32-bit FFmpeg archive checksum mismatch: $x86Actual" }
+          Expand-Archive -Path $x86Archive -DestinationPath $x86Extract -Force
+          $ffmpeg32 = Get-ChildItem -Path $x86Extract -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
+          $license32 = Get-ChildItem -Path $x86Extract -Filter LICENSE.txt -File -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg32 -or $null -eq $license32) { throw "32-bit FFmpeg runtime archive is incomplete." }
+          $version32 = (& $ffmpeg32.FullName -hide_banner -version 2>&1 | Out-String)
+          $demuxers32 = (& $ffmpeg32.FullName -hide_banner -demuxers 2>&1 | Out-String)
+          $encoders32 = (& $ffmpeg32.FullName -hide_banner -encoders 2>&1 | Out-String)
+          $muxers32 = (& $ffmpeg32.FullName -hide_banner -muxers 2>&1 | Out-String)
+          if ($version32 -notmatch "ffmpeg version n7\.1\.5") { throw "Unexpected 32-bit FFmpeg version." }
+          if ($demuxers32 -notmatch "\bdshow\b") { throw "32-bit FFmpeg runtime lacks DirectShow input." }
+          if ($encoders32 -notmatch "\blibx264\b") { throw "32-bit FFmpeg runtime lacks libx264." }
+          if ($muxers32 -notmatch "\brtsp\b") { throw "32-bit FFmpeg runtime lacks the RTSP muxer." }
+          "SONOBUS_FFMPEG32_PATH=$($ffmpeg32.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SONOBUS_FFMPEG32_LICENSE=$($license32.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Download Steinberg ASIO SDK
         shell: pwsh
         run: |
@@ -94,6 +117,7 @@ jobs:
           -DSONOBUS_ENABLE_ASIO=ON
           -DSONOBUS_BUILD_VIDEO_TESTS=ON
           -DSONOBUS_FFMPEG_PATH="$env:SONOBUS_FFMPEG_PATH"
+          -DSONOBUS_FFMPEG32_PATH="$env:SONOBUS_FFMPEG32_PATH"
           -B build
 
       - name: Build
@@ -119,6 +143,16 @@ jobs:
             if (-not (Test-Path $runtime)) { throw "Missing bundled runtime: $runtime" }
             if ((Get-FileHash -Algorithm SHA256 $runtime).Hash -ne $sourceHash) { throw "Bundled runtime checksum mismatch: $runtime" }
           }
+          $sourceHash32 = (Get-FileHash -Algorithm SHA256 $env:SONOBUS_FFMPEG32_PATH).Hash
+          $runtimes32 = @(
+            "sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg32.exe",
+            "sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3/Contents/x86_64-win/ffmpeg32.exe",
+            "sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3/Contents/x86_64-win/ffmpeg32.exe"
+          )
+          foreach ($runtime in $runtimes32) {
+            if (-not (Test-Path $runtime)) { throw "Missing bundled 32-bit runtime: $runtime" }
+            if ((Get-FileHash -Algorithm SHA256 $runtime).Hash -ne $sourceHash32) { throw "Bundled 32-bit runtime checksum mismatch: $runtime" }
+          }
           $helpers = @(
             "sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBusVideoCaptureHelper.exe",
             "sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3/Contents/x86_64-win/SonoBusVideoCaptureHelper.exe",
@@ -142,9 +176,11 @@ jobs:
           Copy-Item -Recurse -Force sonobus/build/SonoBus_artefacts/Release/VST3/SonoBus.vst3 artifacts/windows-x64-asio/
           Copy-Item -Recurse -Force sonobus/build/SonoBusInst_artefacts/Release/VST3/SonoBusInstrument.vst3 artifacts/windows-x64-asio/
           Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg.exe artifacts/windows-x64-asio/
+          Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/ffmpeg32.exe artifacts/windows-x64-asio/
           Copy-Item -Force sonobus/build/SonoBus_artefacts/Release/Standalone/SonoBusVideoCaptureHelper.exe artifacts/windows-x64-asio/
           Copy-Item -Force $env:SONOBUS_FFMPEG_LICENSE artifacts/windows-x64-asio/ffmpeg-LICENSE
           Copy-Item -Force $env:SONOBUS_FFMPEG_README artifacts/windows-x64-asio/ffmpeg-README.txt
+          Copy-Item -Force $env:SONOBUS_FFMPEG32_LICENSE artifacts/windows-x64-asio/ffmpeg32-LICENSE
           Copy-Item -Force docs/ffmpeg-runtime.md artifacts/windows-x64-asio/ffmpeg-RUNTIME.md
           Copy-Item -Force README.md,LICENSE,LICENSE_EXCEPTION,NOTICE.md artifacts/windows-x64-asio/
           Copy-Item -Force sonobus/LICENSE artifacts/windows-x64-asio/sonobus-LICENSE
@@ -156,7 +192,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path installer-input/SonoBus | Out-Null
           Copy-Item -Recurse -Force artifacts/windows-x64-asio/* installer-input/SonoBus/
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            /DSBVERSION="0.1.6" `
+            /DSBVERSION="0.1.7" `
             /DSBASIOSUFFIX="-ASIO" `
             tools/windows-installer/sonobus-installer.iss
 

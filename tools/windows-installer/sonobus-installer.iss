@@ -36,6 +36,7 @@ Name: "vst3"; Description: "VST3 plugins"; Types: full custom
 [Files]
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBus.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\README.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion isreadme
 Source: "{#SourceRoot}\installer-input\SonoBus\LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
@@ -44,6 +45,7 @@ Source: "{#SourceRoot}\installer-input\SonoBus\NOTICE.md"; DestDir: "{app}"; Com
 Source: "{#SourceRoot}\installer-input\SonoBus\sonobus-LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\sonobus-LICENSE_EXCEPTION"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32-LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-RUNTIME.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBus.vst3\*"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -52,11 +54,15 @@ Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusInstrument.vst3\*"; DestDi
 // lives in Contents\x86_64-win\ inside the bundle), so ship them in that folder.
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32.exe"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32-LICENSE"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{commoncf}\VST3\SonoBus.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusVideoCaptureHelper.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32.exe"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32-LICENSE"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3\Contents\x86_64-win"; Components: vst3; Flags: ignoreversion
 
 [Icons]

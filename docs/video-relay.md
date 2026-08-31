@@ -1,6 +1,6 @@
 # 自建 H.264 / WebRTC 视频中转
 
-视频媒体面完全自建：SonoBus 只轮询管理员控制状态；macOS 由 FFmpeg 采集，Windows 由独立 `SonoBusVideoCaptureHelper.exe` 以 `SharedReadOnly` 读取摄像头，再交给 FFmpeg 编码和 RTSP 发布。MediaMTX 负责 WebRTC/WHEP、RTSP 和观看者扇出。helper 崩溃或摄像头/网络中断不会进入音频回调，也不应拖垮 DAW。
+视频媒体面完全自建：SonoBus 只轮询管理员控制状态；macOS 由 FFmpeg 采集，Windows 物理摄像头由独立 `SonoBusVideoCaptureHelper.exe` 以 `SharedReadOnly` 读取后交给 FFmpeg，旧式 32 位 DirectShow 虚拟摄像头则由随包的 `ffmpeg32.exe` 直接采集并发布 RTSP。MediaMTX 负责 WebRTC/WHEP、RTSP 和观看者扇出。helper 崩溃或摄像头/网络中断不会进入音频回调，也不应拖垮 DAW。
 
 公共流同时包含：
 
@@ -35,7 +35,7 @@ SonoBus 原有音频 Relay 仍使用 UDP `9000`，协议和行为不变。
 
 - 客户端从现有 SonoBus 服务器地址派生 `19090` 控制地址和 `19092` RTSP 地址，不增加用户可见的视频服务器输入项。
 - 控制轮询使用 HMAC-SHA256、时间戳、单调序列号和 nonce 防伪造、防重放。
-- Windows 使用 `MediaCaptureSharingMode::SharedReadOnly` 和 `MediaFrameReader`，不会主动取得摄像头独占权；FFmpeg 只接收 NV12 帧、编码 H.264 并发布 RTSP。
+- Windows 物理摄像头使用 `MediaCaptureSharingMode::SharedReadOnly` 和 `MediaFrameReader`，不会主动取得摄像头独占权；64 位 FFmpeg 只接收 NV12 帧、编码 H.264 并发布 RTSP。DirectShow 虚拟摄像头按设备选择 64 位或 32 位 FFmpeg，兼容 32 位进程内滤镜。
 - `SharedReadOnly` 禁止修改摄像头格式。Windows 在正式发布 helper 中只打开一次当前彩色源，选择当下可共享的最高分辨率×FPS源；后台上限只作用于 FFmpeg 输出，自动按实际源分辨率/FPS计算码率，超出源能力时自动钳制。降分辨率只下采样，降 FPS 只丢帧，绝不放大或补帧。
 - 不再先用独立 helper 进程探测模式再重复打开摄像头；管理员选定的设备被独占、断开或共享模式失效时，客户端不会静默切换或自动重试。每次后台开启只尝试一次，客户端掉线或重新打开后自动恢复为关闭，必须由管理员再次开启。
 - macOS 先读取设备实际模式，再按像素面积从高到低验证 60 FPS，绝不静默固定为 `640×360`。

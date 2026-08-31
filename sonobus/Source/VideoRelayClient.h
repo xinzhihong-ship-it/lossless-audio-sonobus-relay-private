@@ -101,6 +101,7 @@ private:
     void logMsg(const juce::String& msg);
     void runVideoLoop();
     juce::String findFfmpeg() const;
+    juce::String findFfmpeg32() const;
     juce::String findWindowsCaptureHelper() const;
     juce::StringArray availableEncoders(const juce::String& ffmpegPath) const;
     juce::StringArray captureArguments(const juce::String& cameraDeviceId, CameraMode mode) const;
