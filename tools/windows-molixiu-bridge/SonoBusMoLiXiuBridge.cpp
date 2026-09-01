@@ -176,9 +176,9 @@ int attach(const wchar_t* dllPath)
     const auto pid = findProcess();
     if (pid == 0) return 3;
     std::wstring selectedCamera;
-    // Polling the existing selection is enough for supported MoLiXiu builds and
-    // avoids touching its code. The VST invokes this bridge again every 5 seconds.
-    if (readSelectedCamera(pid, selectedCamera) && writeState(pid, selectedCamera)) return 0;
+    // Keep the fast selection snapshot, but still inject the hook. The hook is
+    // required for raw-frame capture and for changes made after startup.
+    if (readSelectedCamera(pid, selectedCamera)) writeState(pid, selectedCamera);
     if (dllPath == nullptr || *dllPath == L'\0') return 2;
     if (alreadyLoaded(pid)) return 0;
 
