@@ -1606,6 +1606,8 @@ juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selectio
 
     const auto tail = selector.fromLastOccurrenceOf("\\", false, false).trim();
     if (tail != selector) match = findUniqueName(tail);
+    if (match.isEmpty() && selector.startsWithIgnoreCase("@device_sw_"))
+        return "dshow:" + selector;
     return match;
 }
 #endif
