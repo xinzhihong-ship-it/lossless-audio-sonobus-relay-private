@@ -240,7 +240,7 @@ void appendCallbackProbe(const char* source, const void* callback, const void* c
             used += wsprintfA(line + used, " %02X", object[index]);
         const auto vtable = *reinterpret_cast<const void* const*>(callback);
         used += wsprintfA(line + used, " vtable=%p", vtable);
-        const auto* entries = static_cast<const void* const*>(vtable);
+        const auto* entries = reinterpret_cast<const void* const*>(vtable);
         for (int index = 0; index < 16 && used + 24 < static_cast<int>(std::size(line)); ++index)
             used += wsprintfA(line + used, " v%d=%p", index, entries[index]);
         line[used++] = '\r';
