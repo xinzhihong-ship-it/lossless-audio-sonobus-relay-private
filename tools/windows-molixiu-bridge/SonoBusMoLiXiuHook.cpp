@@ -20,6 +20,7 @@ constexpr SIZE_T kStartCaptureWindowHookLength = 5;
 constexpr SIZE_T kCurrentSolutionHookLength = 5;
 constexpr SIZE_T kIsCaptureingHookLength = 6;
 constexpr SIZE_T kOnVideoSourceHookLength = 5;
+constexpr SIZE_T kSetDataCallbackHookLength = 5;
 // ponytail: fixed MoLiXiu 2.0.2111.2402 layout; fail closed for any other binary.
 constexpr DWORD kMoLiXiuImageTimestamp = 0x619e0b61;
 constexpr DWORD kMoLiXiuImageSize = 0x0039b000;
@@ -38,7 +39,11 @@ void* startCaptureWindowTrampoline = nullptr;
 void* currentSolutionTrampoline = nullptr;
 void* isCaptureingTrampoline = nullptr;
 void* onVideoSourceTrampoline = nullptr;
+void* setDataCallbackTrampoline = nullptr;
 volatile LONG videoProbeCount = 0;
+volatile LONG callbackProbeCount = 0;
+
+void appendCallbackProbe(const char* source, const void* callback, const void* control) noexcept;
 
 bool appendText(wchar_t* target, SIZE_T capacity, SIZE_T& length, const wchar_t* value)
 {
@@ -166,7 +171,10 @@ extern "C" bool __cdecl queueCurrentDevice(const void* realCamera) noexcept
     {
         const auto internal = *reinterpret_cast<const unsigned char* const*>(realCamera);
         // ponytail: fixed MoLiXiu 2021 private ABI; update this offset with the app version.
-        return internal != nullptr && queueLegacyDevice(internal + 0xa0);
+        if (internal == nullptr) return false;
+        appendCallbackProbe("existing", *reinterpret_cast<const void* const*>(internal),
+                            *reinterpret_cast<const void* const*>(internal + 0x4));
+        return queueLegacyDevice(internal + 0xa0);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -201,6 +209,58 @@ void appendVideoProbe(const void* videoData) noexcept
         DWORD written = 0;
         WriteFile(file, line, static_cast<DWORD>(used), &written, nullptr);
         CloseHandle(file);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
+void appendCallbackProbe(const char* source, const void* callback, const void* control) noexcept
+{
+    if (callback == nullptr || InterlockedIncrement(&callbackProbeCount) > 12) return;
+    __try
+    {
+        wchar_t appData[MAX_PATH] {};
+        const auto appDataLength = GetEnvironmentVariableW(L"APPDATA", appData, static_cast<DWORD>(std::size(appData)));
+        if (appDataLength == 0 || appDataLength >= std::size(appData)) return;
+        wchar_t directory[MAX_PATH * 2] {};
+        if (lstrcpyW(directory, appData) == nullptr || lstrcatW(directory, L"\\SonoBus") == nullptr) return;
+        CreateDirectoryW(directory, nullptr);
+        wchar_t path[MAX_PATH * 2] {};
+        if (lstrcpyW(path, directory) == nullptr || lstrcatW(path, L"\\molixiu-callback-probe.txt") == nullptr) return;
+        const auto file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return;
+
+        char line[4096] {};
+        int used = wsprintfA(line, "source=%s callback=%p control=%p", source != nullptr ? source : "unknown",
+                             callback, control);
+        const auto object = static_cast<const unsigned char*>(callback);
+        for (int index = 0; index < 64 && used + 4 < static_cast<int>(std::size(line)); ++index)
+            used += wsprintfA(line + used, " %02X", object[index]);
+        const auto vtable = *reinterpret_cast<const void* const*>(callback);
+        used += wsprintfA(line + used, " vtable=%p", vtable);
+        const auto* entries = static_cast<const void* const*>(vtable);
+        for (int index = 0; index < 16 && used + 24 < static_cast<int>(std::size(line)); ++index)
+            used += wsprintfA(line + used, " v%d=%p", index, entries[index]);
+        line[used++] = '\r';
+        line[used++] = '\n';
+        DWORD written = 0;
+        WriteFile(file, line, static_cast<DWORD>(used), &written, nullptr);
+        CloseHandle(file);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
+void probeWeakCallback(const void* weakPointer) noexcept
+{
+    if (weakPointer == nullptr) return;
+    __try
+    {
+        const auto* words = static_cast<const void* const*>(weakPointer);
+        appendCallbackProbe("setDataCallback", words[0], words[1]);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -326,6 +386,22 @@ extern "C" __declspec(naked) void hookOnVideoSource()
     }
 }
 
+extern "C" __declspec(naked) void hookSetDataCallback()
+{
+    __asm
+    {
+        pushfd
+        pushad
+        mov edx, [esp + 40]
+        push edx
+        call probeWeakCallback
+        add esp, 4
+        popad
+        popfd
+        jmp dword ptr [setDataCallbackTrampoline]
+    }
+}
+
 bool installHook(void* target, void* replacement, SIZE_T length, const unsigned char* expected, void** trampoline)
 {
     if (target == nullptr || replacement == nullptr || trampoline == nullptr || length < 5) return false;
@@ -399,6 +475,8 @@ DWORD WINAPI bridgeThread(void*)
         "?isCaptureing@RealCamera@@QAE_NXZ");
     const auto onVideoSource = GetProcAddress(cameraCore,
         "?onVideoSource@VideoDataProcess@@QAEXAAV?$shared_ptr@UVideoData@@@boost@@@Z");
+    const auto setDataCallback = GetProcAddress(cameraCore,
+        "?setDataCallback@RealCamera@@QAEXAAV?$weak_ptr@VSourceDataCallBack@@@boost@@@Z");
     const unsigned char setExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
     const unsigned char startExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 };
     const unsigned char windowExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
@@ -419,6 +497,9 @@ DWORD WINAPI bridgeThread(void*)
     const unsigned char onVideoSourceExpected[] = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF };
     installHook(reinterpret_cast<void*>(onVideoSource), reinterpret_cast<void*>(&hookOnVideoSource),
                 kOnVideoSourceHookLength, onVideoSourceExpected, &onVideoSourceTrampoline);
+    const unsigned char setDataCallbackExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45 };
+    installHook(reinterpret_cast<void*>(setDataCallback), reinterpret_cast<void*>(&hookSetDataCallback),
+                kSetDataCallbackHookLength, setDataCallbackExpected, &setDataCallbackTrampoline);
 
     InterlockedExchange(&bridgeReady, 1);
     for (int attempt = 0; attempt < 50 && ! queueExistingSelection(); ++attempt) Sleep(100);
