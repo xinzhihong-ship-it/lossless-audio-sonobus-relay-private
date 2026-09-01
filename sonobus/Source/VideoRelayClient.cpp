@@ -435,6 +435,8 @@ void VideoRelayClient::runVideoLoop()
                 selectedIsMoLiXiu = isMoLiXiuCamera(device);
                 break;
             }
+            if (! selectedIsMoLiXiu)
+                selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
 
             if (selectedIsMoLiXiu && nowHi >= nextMoLiXiuAttachMs)
             {
