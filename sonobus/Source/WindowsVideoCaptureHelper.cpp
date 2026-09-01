@@ -298,7 +298,20 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
         }
         session.reader.AcquisitionMode(MediaFrameReaderAcquisitionMode::Realtime);
         session.frameToken = session.reader.FrameArrived(onFrame);
-        const auto status = session.reader.StartAsync().get();
+        MediaFrameReaderStartStatus status;
+        try
+        {
+            status = session.reader.StartAsync().get();
+        }
+        catch (const hresult_error& error)
+        {
+            std::cout << "reader_start_error=0x" << std::hex << static_cast<uint32_t>(error.code())
+                      << std::dec << '\n' << std::flush;
+            session.reader.FrameArrived(session.frameToken);
+            session.reader.Close();
+            session.reader = nullptr;
+            return false;
+        }
         if (status == MediaFrameReaderStartStatus::Success) return true;
         std::cout << "reader_start_status=" << static_cast<int>(status) << '\n' << std::flush;
         session.reader.FrameArrived(session.frameToken);
