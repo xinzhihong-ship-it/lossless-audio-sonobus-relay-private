@@ -1557,15 +1557,21 @@ juce::String VideoRelayClient::readMoLiXiuSelection() const
 juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selection,
                                                     const juce::Array<CameraDevice>& devices) const
 {
-    auto selector = selection.trim();
-    if (selector.startsWithIgnoreCase("video=")) selector = selector.substring(6).trim();
-    if (selector.startsWithIgnoreCase("dshow:")) selector = selector.substring(6).trim();
+    auto normalizeSelector = [](juce::String value)
+    {
+        value = value.trim();
+        if (value.startsWithIgnoreCase("video=")) value = value.substring(6).trim();
+        if (value.startsWithIgnoreCase("dshow:")) value = value.substring(6).trim();
+        if (value.startsWithIgnoreCase("@device:sw:")) value = "@device_sw_" + value.substring(11);
+        return value;
+    };
+
+    auto selector = normalizeSelector(selection);
     if (selector.isEmpty()) return {};
 
     for (const auto& device : devices)
     {
-        auto deviceSelector = device.id;
-        if (deviceSelector.startsWithIgnoreCase("dshow:")) deviceSelector = deviceSelector.substring(6).trim();
+        auto deviceSelector = normalizeSelector(device.id);
         if (deviceSelector.equalsIgnoreCase(selector)) return device.id;
     }
 
