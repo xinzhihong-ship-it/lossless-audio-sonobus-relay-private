@@ -106,7 +106,7 @@ private:
 #if JUCE_WINDOWS
     bool isMoLiXiuCamera(const CameraDevice& device) const;
     juce::String findWindowsMoLiXiuBridge() const;
-    bool registerMoLiXiuMultiCamera() const;
+    bool registerMoLiXiuMultiCamera();
     void attachMoLiXiuBridge();
     juce::String readMoLiXiuSelection() const;
     juce::String resolveMoLiXiuCamera(const juce::String& selection,

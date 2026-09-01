@@ -1559,7 +1559,7 @@ juce::String VideoRelayClient::findWindowsMoLiXiuBridge() const
     return {};
 }
 
-bool VideoRelayClient::registerMoLiXiuMultiCamera() const
+bool VideoRelayClient::registerMoLiXiuMultiCamera()
 {
     const auto localAppData = juce::SystemStats::getEnvironmentVariable("LOCALAPPDATA", {});
     if (localAppData.isEmpty()) return false;
