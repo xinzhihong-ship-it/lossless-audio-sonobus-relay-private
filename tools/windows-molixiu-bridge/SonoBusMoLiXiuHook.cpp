@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
-#include <string>
 
 #if ! defined(_M_IX86)
 #error "SonoBusMoLiXiuHook must be built as a 32-bit Windows DLL."
@@ -183,9 +182,11 @@ void appendVideoProbe(const void* videoData) noexcept
         wchar_t appData[MAX_PATH] {};
         const auto appDataLength = GetEnvironmentVariableW(L"APPDATA", appData, static_cast<DWORD>(std::size(appData)));
         if (appDataLength == 0 || appDataLength >= std::size(appData)) return;
+        wchar_t directory[MAX_PATH * 2] {};
+        if (lstrcpyW(directory, appData) == nullptr || lstrcatW(directory, L"\\SonoBus") == nullptr) return;
+        CreateDirectoryW(directory, nullptr);
         wchar_t path[MAX_PATH * 2] {};
-        wsprintfW(path, L"%s\\SonoBus\\molixiu-video-probe.txt", appData);
-        CreateDirectoryW((std::wstring(appData) + L"\\SonoBus").c_str(), nullptr);
+        if (lstrcpyW(path, directory) == nullptr || lstrcatW(path, L"\\molixiu-video-probe.txt") == nullptr) return;
         const auto file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                       nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) return;
