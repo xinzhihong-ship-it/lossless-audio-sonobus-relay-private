@@ -337,6 +337,7 @@ void VideoRelayClient::runVideoLoop()
     double nextPublisherAttemptMs = 0.0;
     double nextDeviceRefreshMs = 0.0;
     double nextMoLiXiuAttachMs = 0.0;
+    bool molixiuMultiRegistrationAttempted = false;
     int deviceRefreshDelayMs = 1000;
     while (! threadShouldExit())
     {
@@ -456,6 +457,18 @@ void VideoRelayClient::runVideoLoop()
             if (! selectedIsMoLiXiu)
                 selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
 
+            if (selectedIsMoLiXiu && ! molixiuMultiRegistrationAttempted)
+            {
+                registerMoLiXiuMultiCamera();
+                molixiuMultiRegistrationAttempted = true;
+                enumerationError.clear();
+                devices = getCameraDevices(ffmpegPath, enumerationError);
+                lastDeviceRefresh = now;
+                const juce::ScopedLock lock(stateLock);
+                cameras = devices;
+                cameraError = enumerationError;
+            }
+
             const auto molixiuSelection = readMoLiXiuSelection();
             const auto resolvedMoLiXiu = resolveMoLiXiuCamera(molixiuSelection, devices);
             if (! selectedIsMoLiXiu && resolvedMoLiXiu.isNotEmpty())
@@ -548,7 +561,7 @@ void VideoRelayClient::runVideoLoop()
                     {
                         auto launchDesired = desired;
                         // MoLiXiu remains the selected virtual output for other applications;
-                        // SonoBus publishes the physical camera selected inside MoLiXiu.
+                        // SonoBus uses YY's separate multi-client mirror.
                         launchDesired.cameraDeviceId = captureCamera;
                         if (startPublisher(ffmpegPath, devices, launchDesired, mode))
                         {
@@ -1527,6 +1540,7 @@ bool VideoRelayClient::isMoLiXiuCamera(const CameraDevice& device) const
     return value.containsIgnoreCase("molixiu")
         || value.containsIgnoreCase("ishow")
         || value.containsIgnoreCase("yyanchorvcam")
+        || value.containsIgnoreCase("yyanchormulvcam")
         || value.contains(u8"YY开播")
         || value.contains(u8"魔力秀");
 }
@@ -1543,6 +1557,28 @@ juce::String VideoRelayClient::findWindowsMoLiXiuBridge() const
             return candidate.getFullPathName();
     }
     return {};
+}
+
+bool VideoRelayClient::registerMoLiXiuMultiCamera() const
+{
+    const auto localAppData = juce::SystemStats::getEnvironmentVariable("LOCALAPPDATA", {});
+    if (localAppData.isEmpty()) return false;
+    const auto root = juce::File(localAppData).getChildFile("duowan").getChildFile("yyanchor");
+    for (const auto& service : root.findChildFiles(juce::File::findFiles, true, "YYVCamService.exe"))
+    {
+        juce::ChildProcess process;
+        if (! process.start({ service.getFullPathName(), "--regYYVCam" },
+                            juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+            continue;
+        if (! process.waitForProcessToFinish(1500))
+        {
+            process.kill();
+            continue;
+        }
+        logMsg("YY multi-client camera registration exit=" + juce::String(process.getExitCode()));
+        return process.getExitCode() == 0;
+    }
+    return false;
 }
 
 void VideoRelayClient::attachMoLiXiuBridge()
@@ -1584,10 +1620,24 @@ juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selectio
     auto selector = normalizeMoLiXiuSelector(selection);
     if (selector.isEmpty()) return {};
 
+    const auto preferMultiClient = [&devices](const juce::String& candidate)
+    {
+        const auto normalized = normalizeMoLiXiuSelector(candidate);
+        const auto separator = normalized.lastIndexOfChar('\\');
+        if (separator <= 0) return candidate;
+        const auto tail = normalized.substring(separator + 1);
+        if (! tail.equalsIgnoreCase("yyanchorvcam") && ! tail.equalsIgnoreCase("yyanchormulvcam"))
+            return candidate;
+        const auto sharedSelector = normalized.substring(0, separator + 1) + "yyanchormulvcam";
+        for (const auto& device : devices)
+            if (normalizeMoLiXiuSelector(device.id).equalsIgnoreCase(sharedSelector)) return device.id;
+        return tail.equalsIgnoreCase("yyanchorvcam") ? "dshow:" + sharedSelector : candidate;
+    };
+
     for (const auto& device : devices)
     {
         auto deviceSelector = normalizeMoLiXiuSelector(device.id);
-        if (deviceSelector.equalsIgnoreCase(selector)) return device.id;
+        if (deviceSelector.equalsIgnoreCase(selector)) return preferMultiClient(device.id);
     }
 
     auto findUniqueName = [&devices](const juce::String& name)
@@ -1602,13 +1652,13 @@ juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selectio
         return match;
     };
     auto match = findUniqueName(selector);
-    if (match.isNotEmpty()) return match;
+    if (match.isNotEmpty()) return preferMultiClient(match);
 
     const auto tail = selector.fromLastOccurrenceOf("\\", false, false).trim();
     if (tail != selector) match = findUniqueName(tail);
-    if (match.isEmpty() && selector.startsWithIgnoreCase("@device_sw_"))
-        return "dshow:" + selector;
-    return match;
+    if (match.isNotEmpty()) return preferMultiClient(match);
+    if (selector.startsWithIgnoreCase("@device_sw_")) return preferMultiClient("dshow:" + selector);
+    return {};
 }
 #endif
 
