@@ -42,8 +42,13 @@ void* onVideoSourceTrampoline = nullptr;
 void* setDataCallbackTrampoline = nullptr;
 volatile LONG videoProbeCount = 0;
 volatile LONG callbackProbeCount = 0;
+volatile LONG callbackCallProbeCount = 0;
+void* callbackOriginals[16] {};
+void* patchedCallbackVtable = nullptr;
 
 void appendCallbackProbe(const char* source, const void* callback, const void* control) noexcept;
+void appendCallbackCallProbe(int slot, const void* stack) noexcept;
+void patchCallbackVtable(const void* vtable) noexcept;
 
 bool appendText(wchar_t* target, SIZE_T capacity, SIZE_T& length, const wchar_t* value)
 {
@@ -248,10 +253,140 @@ void appendCallbackProbe(const char* source, const void* callback, const void* c
         DWORD written = 0;
         WriteFile(file, line, static_cast<DWORD>(used), &written, nullptr);
         CloseHandle(file);
+        patchCallbackVtable(vtable);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
     }
+}
+
+void appendCallbackCallProbe(int slot, const void* stack) noexcept
+{
+    if (stack == nullptr || InterlockedIncrement(&callbackCallProbeCount) > 64) return;
+    __try
+    {
+        wchar_t appData[MAX_PATH] {};
+        const auto appDataLength = GetEnvironmentVariableW(L"APPDATA", appData, static_cast<DWORD>(std::size(appData)));
+        if (appDataLength == 0 || appDataLength >= std::size(appData)) return;
+        wchar_t directory[MAX_PATH * 2] {};
+        if (lstrcpyW(directory, appData) == nullptr || lstrcatW(directory, L"\\SonoBus") == nullptr) return;
+        CreateDirectoryW(directory, nullptr);
+        wchar_t path[MAX_PATH * 2] {};
+        if (lstrcpyW(path, directory) == nullptr || lstrcatW(path, L"\\molixiu-callback-calls.txt") == nullptr) return;
+        const auto file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return;
+
+        const auto* words = static_cast<const DWORD*>(stack);
+        char line[1024] {};
+        int used = wsprintfA(line, "slot=%d ret=%p this=%p", slot,
+                             reinterpret_cast<const void*>(words[0]),
+                             reinterpret_cast<const void*>(words[1]));
+        for (int index = 2; index < 10 && used + 24 < static_cast<int>(std::size(line)); ++index)
+            used += wsprintfA(line + used, " a%d=%p", index - 1,
+                              reinterpret_cast<const void*>(words[index]));
+        line[used++] = '\r';
+        line[used++] = '\n';
+        DWORD written = 0;
+        WriteFile(file, line, static_cast<DWORD>(used), &written, nullptr);
+        CloseHandle(file);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
+extern "C" __declspec(naked) void hookCallback0()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 0; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 0] }
+}
+extern "C" __declspec(naked) void hookCallback1()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 1; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 4] }
+}
+extern "C" __declspec(naked) void hookCallback2()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 2; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 8] }
+}
+extern "C" __declspec(naked) void hookCallback3()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 3; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 12] }
+}
+extern "C" __declspec(naked) void hookCallback4()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 4; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 16] }
+}
+extern "C" __declspec(naked) void hookCallback5()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 5; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 20] }
+}
+extern "C" __declspec(naked) void hookCallback6()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 6; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 24] }
+}
+extern "C" __declspec(naked) void hookCallback7()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 7; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 28] }
+}
+extern "C" __declspec(naked) void hookCallback8()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 8; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 32] }
+}
+extern "C" __declspec(naked) void hookCallback9()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 9; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 36] }
+}
+extern "C" __declspec(naked) void hookCallback10()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 10; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 40] }
+}
+extern "C" __declspec(naked) void hookCallback11()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 11; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 44] }
+}
+extern "C" __declspec(naked) void hookCallback12()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 12; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 48] }
+}
+extern "C" __declspec(naked) void hookCallback13()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 13; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 52] }
+}
+extern "C" __declspec(naked) void hookCallback14()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 14; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 56] }
+}
+extern "C" __declspec(naked) void hookCallback15()
+{
+    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 15; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 60] }
+}
+
+void patchCallbackVtable(const void* vtable) noexcept
+{
+    if (vtable == nullptr || InterlockedCompareExchangePointer(&patchedCallbackVtable,
+                                                                 const_cast<void*>(vtable), nullptr) != nullptr)
+        return;
+    const void* wrappers[] = { &hookCallback0, &hookCallback1, &hookCallback2, &hookCallback3,
+                               &hookCallback4, &hookCallback5, &hookCallback6, &hookCallback7,
+                               &hookCallback8, &hookCallback9, &hookCallback10, &hookCallback11,
+                               &hookCallback12, &hookCallback13, &hookCallback14, &hookCallback15 };
+    for (int index = 0; index < 16; ++index)
+    {
+        const auto entry = reinterpret_cast<const void* const*>(vtable)[index];
+        HMODULE owner = nullptr;
+        if (entry == nullptr || ! GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                                       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                                       static_cast<LPCWSTR>(entry), &owner))
+            continue;
+        DWORD oldProtection = 0;
+        auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable)) + index;
+        if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) continue;
+        callbackOriginals[index] = const_cast<void*>(entry);
+        *slot = const_cast<void*>(wrappers[index]);
+        DWORD ignored = 0;
+        VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
+    }
+    FlushInstructionCache(GetCurrentProcess(), const_cast<void*>(vtable), 16 * sizeof(void*));
 }
 
 void probeWeakCallback(const void* weakPointer) noexcept
