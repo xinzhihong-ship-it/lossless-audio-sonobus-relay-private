@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <iterator>
 
 #if ! defined(_M_IX86)
@@ -142,12 +143,29 @@ bool copyLegacyWString(const void* object, wchar_t* output, DWORD& length) noexc
     }
 }
 
+bool isVirtualDevice(const wchar_t* value) noexcept
+{
+    if (value == nullptr) return false;
+    constexpr const wchar_t* virtualNames[] {
+        L"yyanchorvcam", L"yyanchormulvcam", L"obs virtual camera", L"webcastmate virtualcamera"
+    };
+    for (const auto* name : virtualNames)
+    {
+        const auto length = std::wcslen(name);
+        for (auto cursor = value; *cursor != L'\0'; ++cursor)
+            if (_wcsnicmp(cursor, name, length) == 0) return true;
+    }
+    return false;
+}
+
 extern "C" bool __cdecl queueLegacyDevice(const void* object) noexcept
 {
     if (InterlockedCompareExchange(&bridgeReady, 0, 0) == 0) return false;
     wchar_t value[kMaxDeviceChars + 1] {};
     DWORD length = 0;
     if (! copyLegacyWString(object, value, length)) return false;
+    // Keep the last physical source when the host switches to a virtual/video source.
+    if (isVirtualDevice(value)) return true;
     EnterCriticalSection(&pendingLock);
     if (length == pendingLength && std::memcmp(pendingDevice, value, (length + 1) * sizeof(wchar_t)) == 0)
     {
