@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <string>
 
 #if ! defined(_M_IX86)
 #error "SonoBusMoLiXiuHook must be built as a 32-bit Windows DLL."
@@ -19,6 +20,7 @@ constexpr SIZE_T kStartCaptureHookLength = 6;
 constexpr SIZE_T kStartCaptureWindowHookLength = 5;
 constexpr SIZE_T kCurrentSolutionHookLength = 5;
 constexpr SIZE_T kIsCaptureingHookLength = 6;
+constexpr SIZE_T kOnVideoSourceHookLength = 5;
 // ponytail: fixed MoLiXiu 2.0.2111.2402 layout; fail closed for any other binary.
 constexpr DWORD kMoLiXiuImageTimestamp = 0x619e0b61;
 constexpr DWORD kMoLiXiuImageSize = 0x0039b000;
@@ -36,6 +38,8 @@ void* startCaptureTrampoline = nullptr;
 void* startCaptureWindowTrampoline = nullptr;
 void* currentSolutionTrampoline = nullptr;
 void* isCaptureingTrampoline = nullptr;
+void* onVideoSourceTrampoline = nullptr;
+volatile LONG videoProbeCount = 0;
 
 bool appendText(wchar_t* target, SIZE_T capacity, SIZE_T& length, const wchar_t* value)
 {
@@ -171,6 +175,37 @@ extern "C" bool __cdecl queueCurrentDevice(const void* realCamera) noexcept
     }
 }
 
+void appendVideoProbe(const void* videoData) noexcept
+{
+    if (videoData == nullptr || InterlockedIncrement(&videoProbeCount) > 30) return;
+    __try
+    {
+        wchar_t appData[MAX_PATH] {};
+        const auto appDataLength = GetEnvironmentVariableW(L"APPDATA", appData, static_cast<DWORD>(std::size(appData)));
+        if (appDataLength == 0 || appDataLength >= std::size(appData)) return;
+        wchar_t path[MAX_PATH * 2] {};
+        wsprintfW(path, L"%s\\SonoBus\\molixiu-video-probe.txt", appData);
+        CreateDirectoryW((std::wstring(appData) + L"\\SonoBus").c_str(), nullptr);
+        const auto file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return;
+
+        char line[2048] {};
+        int used = wsprintfA(line, "video=%p", videoData);
+        const auto bytes = static_cast<const unsigned char*>(videoData);
+        for (int index = 0; index < 128 && used + 4 < static_cast<int>(std::size(line)); ++index)
+            used += wsprintfA(line + used, " %02X", bytes[index]);
+        line[used++] = '\r';
+        line[used++] = '\n';
+        DWORD written = 0;
+        WriteFile(file, line, static_cast<DWORD>(used), &written, nullptr);
+        CloseHandle(file);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
 bool queueExistingSelection() noexcept
 {
     const auto module = GetModuleHandleW(L"molixiudll.dll");
@@ -273,6 +308,23 @@ extern "C" __declspec(naked) void hookIsCaptureing()
     }
 }
 
+extern "C" __declspec(naked) void hookOnVideoSource()
+{
+    __asm
+    {
+        pushfd
+        pushad
+        mov edx, [esp + 40]
+        mov edx, [edx]
+        push edx
+        call appendVideoProbe
+        add esp, 4
+        popad
+        popfd
+        jmp dword ptr [onVideoSourceTrampoline]
+    }
+}
+
 bool installHook(void* target, void* replacement, SIZE_T length, const unsigned char* expected, void** trampoline)
 {
     if (target == nullptr || replacement == nullptr || trampoline == nullptr || length < 5) return false;
@@ -344,6 +396,8 @@ DWORD WINAPI bridgeThread(void*)
         "?getCurrentSolution@RealCamera@@QAEHXZ");
     const auto isCaptureing = GetProcAddress(cameraCore,
         "?isCaptureing@RealCamera@@QAE_NXZ");
+    const auto onVideoSource = GetProcAddress(cameraCore,
+        "?onVideoSource@VideoDataProcess@@QAEXAAV?$shared_ptr@UVideoData@@@boost@@@Z");
     const unsigned char setExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
     const unsigned char startExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 };
     const unsigned char windowExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
@@ -361,6 +415,9 @@ DWORD WINAPI bridgeThread(void*)
                 kCurrentSolutionHookLength, currentSolutionExpected, &currentSolutionTrampoline);
     installHook(reinterpret_cast<void*>(isCaptureing), reinterpret_cast<void*>(&hookIsCaptureing),
                 kIsCaptureingHookLength, isCaptureingExpected, &isCaptureingTrampoline);
+    const unsigned char onVideoSourceExpected[] = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF };
+    installHook(reinterpret_cast<void*>(onVideoSource), reinterpret_cast<void*>(&hookOnVideoSource),
+                kOnVideoSourceHookLength, onVideoSourceExpected, &onVideoSourceTrampoline);
 
     InterlockedExchange(&bridgeReady, 1);
     for (int attempt = 0; attempt < 50 && ! queueExistingSelection(); ++attempt) Sleep(100);
