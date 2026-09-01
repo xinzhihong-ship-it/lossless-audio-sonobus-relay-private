@@ -1569,24 +1569,13 @@ juce::String VideoRelayClient::readMoLiXiuSelection() const
                           .getChildFile("SonoBus").getChildFile("molixiu-camera.txt");
     const auto lines = juce::StringArray::fromLines(path.loadFileAsString());
     juce::String device;
-    juce::int64 pid = 0;
     for (const auto& line : lines)
     {
-        if (line.startsWith("pid=")) pid = line.substring(4).getLargeIntValue();
-        else if (line.startsWith("device=")) device = line.substring(7).trim();
+        if (line.startsWith("device=")) device = line.substring(7).trim();
     }
-    if (pid <= 0 || pid > 0xffffffffLL || device.isEmpty()) return {};
-    const auto process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                                     FALSE, static_cast<DWORD>(pid));
-    if (process == nullptr) return {};
-    const auto alive = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
-    wchar_t imagePath[32768] {};
-    DWORD imageLength = static_cast<DWORD>(std::size(imagePath));
-    const auto imageRead = QueryFullProcessImageNameW(process, 0, imagePath, &imageLength) != FALSE;
-    CloseHandle(process);
-    const auto imageName = imageRead ? juce::String(imagePath, static_cast<int>(imageLength)) : juce::String();
-    const auto executable = imageName.fromLastOccurrenceOf("\\", false, false);
-    return alive && imageRead && executable.equalsIgnoreCase("molixiu.exe") ? device : juce::String();
+    // The bridge owns this snapshot. Keep the last real camera when MoLiXiu
+    // turns its virtual output off; the relay must not fall back to that output.
+    return device;
 }
 
 juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selection,
