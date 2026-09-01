@@ -298,67 +298,259 @@ void appendCallbackCallProbe(int slot, const void* stack) noexcept
 
 extern "C" __declspec(naked) void hookCallback0()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 0; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 0] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 0
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 0]
+    }
 }
 extern "C" __declspec(naked) void hookCallback1()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 1; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 4] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 1
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 4]
+    }
 }
 extern "C" __declspec(naked) void hookCallback2()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 2; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 8] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 2
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 8]
+    }
 }
 extern "C" __declspec(naked) void hookCallback3()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 3; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 12] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 3
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 12]
+    }
 }
 extern "C" __declspec(naked) void hookCallback4()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 4; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 16] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 4
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 16]
+    }
 }
 extern "C" __declspec(naked) void hookCallback5()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 5; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 20] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 5
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 20]
+    }
 }
 extern "C" __declspec(naked) void hookCallback6()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 6; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 24] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 6
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 24]
+    }
 }
 extern "C" __declspec(naked) void hookCallback7()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 7; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 28] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 7
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 28]
+    }
 }
 extern "C" __declspec(naked) void hookCallback8()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 8; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 32] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 8
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 32]
+    }
 }
 extern "C" __declspec(naked) void hookCallback9()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 9; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 36] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 9
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 36]
+    }
 }
 extern "C" __declspec(naked) void hookCallback10()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 10; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 40] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 10
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 40]
+    }
 }
 extern "C" __declspec(naked) void hookCallback11()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 11; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 44] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 11
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 44]
+    }
 }
 extern "C" __declspec(naked) void hookCallback12()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 12; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 48] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 12
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 48]
+    }
 }
 extern "C" __declspec(naked) void hookCallback13()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 13; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 52] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 13
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 52]
+    }
 }
 extern "C" __declspec(naked) void hookCallback14()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 14; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 56] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 14
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 56]
+    }
 }
 extern "C" __declspec(naked) void hookCallback15()
 {
-    __asm { pushfd; pushad; lea eax, [esp + 36]; push eax; push 15; call appendCallbackCallProbe; add esp, 8; popad; popfd; jmp dword ptr [callbackOriginals + 60] }
+    __asm
+    {
+        pushfd
+        pushad
+        lea eax, [esp + 36]
+        push eax
+        push 15
+        call appendCallbackCallProbe
+        add esp, 8
+        popad
+        popfd
+        jmp dword ptr [callbackOriginals + 60]
+    }
 }
 
 void patchCallbackVtable(const void* vtable) noexcept
