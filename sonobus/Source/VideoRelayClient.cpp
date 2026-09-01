@@ -184,6 +184,24 @@ juce::String cameraFailureMessage(const juce::String& output)
     }
     return {};
 }
+
+#if JUCE_WINDOWS
+juce::String normalizeMoLiXiuSelector(juce::String value)
+{
+    value = value.trim();
+    if (value.startsWithIgnoreCase("video=")) value = value.substring(6).trim();
+    if (value.startsWithIgnoreCase("dshow:")) value = value.substring(6).trim();
+    if (value.startsWithIgnoreCase("@device:sw:")) value = "@device_sw_" + value.substring(11);
+    return value;
+}
+
+juce::String moLiXiuDeviceFamily(const juce::String& value)
+{
+    const auto normalized = normalizeMoLiXiuSelector(value);
+    const auto separator = normalized.indexOfChar('\\');
+    return separator > 0 ? normalized.substring(0, separator + 1) : juce::String();
+}
+#endif
 }
 
 VideoRelayClient::VideoRelayClient()
@@ -438,6 +456,21 @@ void VideoRelayClient::runVideoLoop()
             if (! selectedIsMoLiXiu)
                 selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
 
+            const auto molixiuSelection = readMoLiXiuSelection();
+            const auto resolvedMoLiXiu = resolveMoLiXiuCamera(molixiuSelection, devices);
+            if (! selectedIsMoLiXiu && resolvedMoLiXiu.isNotEmpty())
+            {
+                const auto selectedFamily = moLiXiuDeviceFamily(selectedCamera);
+                const auto resolvedFamily = moLiXiuDeviceFamily(resolvedMoLiXiu);
+                bool sameName = false;
+                for (const auto& device : devices)
+                    if (device.id == resolvedMoLiXiu)
+                        sameName = normalizeMoLiXiuSelector(selectedCamera).equalsIgnoreCase(
+                            normalizeMoLiXiuSelector(device.name));
+                selectedIsMoLiXiu = (selectedFamily.isNotEmpty() && resolvedFamily.isNotEmpty()
+                                     && selectedFamily.equalsIgnoreCase(resolvedFamily)) || sameName;
+            }
+
             if (selectedIsMoLiXiu && nowHi >= nextMoLiXiuAttachMs)
             {
                 attachMoLiXiuBridge();
@@ -448,7 +481,7 @@ void VideoRelayClient::runVideoLoop()
             auto captureCamera = selectedCamera;
 #if JUCE_WINDOWS
             if (selectedIsMoLiXiu)
-                captureCamera = resolveMoLiXiuCamera(readMoLiXiuSelection(), devices);
+                captureCamera = resolvedMoLiXiu;
 #endif
 
             bool cameraAvailable = false;
@@ -1559,21 +1592,12 @@ juce::String VideoRelayClient::readMoLiXiuSelection() const
 juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selection,
                                                     const juce::Array<CameraDevice>& devices) const
 {
-    auto normalizeSelector = [](juce::String value)
-    {
-        value = value.trim();
-        if (value.startsWithIgnoreCase("video=")) value = value.substring(6).trim();
-        if (value.startsWithIgnoreCase("dshow:")) value = value.substring(6).trim();
-        if (value.startsWithIgnoreCase("@device:sw:")) value = "@device_sw_" + value.substring(11);
-        return value;
-    };
-
-    auto selector = normalizeSelector(selection);
+    auto selector = normalizeMoLiXiuSelector(selection);
     if (selector.isEmpty()) return {};
 
     for (const auto& device : devices)
     {
-        auto deviceSelector = normalizeSelector(device.id);
+        auto deviceSelector = normalizeMoLiXiuSelector(device.id);
         if (deviceSelector.equalsIgnoreCase(selector)) return device.id;
     }
 
