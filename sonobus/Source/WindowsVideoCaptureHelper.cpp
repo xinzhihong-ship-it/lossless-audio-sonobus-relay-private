@@ -283,11 +283,13 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
             state->changed.notify_all();
         }
     };
-    const auto startReader = [&session, &onFrame](const auto& subtype)
+    const auto startReader = [&session, &onFrame](const hstring& subtype)
     {
         try
         {
-            session.reader = session.capture.CreateFrameReaderAsync(session.source, subtype).get();
+            session.reader = subtype.empty()
+                           ? session.capture.CreateFrameReaderAsync(session.source).get()
+                           : session.capture.CreateFrameReaderAsync(session.source, subtype).get();
         }
         catch (const hresult_error&)
         {
@@ -298,6 +300,7 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
         session.frameToken = session.reader.FrameArrived(onFrame);
         const auto status = session.reader.StartAsync().get();
         if (status == MediaFrameReaderStartStatus::Success) return true;
+        std::cout << "reader_start_status=" << static_cast<int>(status) << '\n' << std::flush;
         session.reader.FrameArrived(session.frameToken);
         session.reader.Close();
         session.reader = nullptr;
@@ -305,7 +308,8 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
     };
     // Some camera drivers expose the stream but reject an NV12 frame reader at start.
     // Bgra8 is accepted by those drivers and copyNv12 converts it before FFmpeg input.
-    if (! startReader(MediaEncodingSubtypes::Nv12())
+    if (! startReader(hstring())
+        && ! startReader(MediaEncodingSubtypes::Nv12())
         && ! startReader(MediaEncodingSubtypes::Bgra8()))
     {
         std::cout << "SONOBUS_ERROR=unavailable:reader-start" << std::endl;
