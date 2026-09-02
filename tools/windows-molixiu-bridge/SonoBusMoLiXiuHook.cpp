@@ -286,26 +286,20 @@ bool classifyRawFrame(const unsigned char* data, DWORD bytes, DWORD width, DWORD
     return false;
 }
 
-bool tryRawPointer(const unsigned char* object, SIZE_T pointerOffset, SIZE_T sizeOffset,
-                   DWORD width, DWORD height, RawFrame& output) noexcept
+bool tryMoLiXiuImageBlock(const unsigned char* object, DWORD& width, DWORD& height,
+                          RawFrame& output) noexcept
 {
-    DWORD pointer = 0;
-    DWORD bytes = 0;
-    if (! readWord(object, pointerOffset, pointer) || ! readWord(object, sizeOffset, bytes)) return false;
-    return classifyRawFrame(reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(pointer)),
-                             bytes, width, height, output);
-}
+    DWORD imageBlock = 0;
+    if (! readWord(object, 0x08, imageBlock) || imageBlock == 0) return false;
 
-bool tryQtByteArray(const unsigned char* object, SIZE_T pointerOffset,
-                    DWORD width, DWORD height, RawFrame& output) noexcept
-{
-    DWORD storage = 0;
-    if (! readWord(object, pointerOffset, storage)) return false;
-    const auto* bytes = reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(storage));
-    if (! readable(bytes, 12)) return false;
-    DWORD size = 0;
-    if (! readWord(bytes, 8, size)) return false;
-    return classifyRawFrame(bytes + 12, size, width, height, output);
+    const auto* image = reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(imageBlock));
+    DWORD bytes = 0;
+    DWORD data = 0;
+    if (! readWord(image, 0x04, width) || ! readWord(image, 0x08, height)
+        || ! readWord(image, 0x10, bytes) || ! readWord(image, 0x14, data))
+        return false;
+    return classifyRawFrame(reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(data)),
+                            bytes, width, height, output);
 }
 
 bool copyMoLiXiuFrame(const void* videoData) noexcept
@@ -316,18 +310,8 @@ bool copyMoLiXiuFrame(const void* videoData) noexcept
         const auto* object = static_cast<const unsigned char*>(videoData);
         DWORD width = 0;
         DWORD height = 0;
-        if (! readWord(object, 0x18, width) || ! readWord(object, 0x1c, height)) return false;
-
         RawFrame source;
-        // VideoData stores its bytes in a Qt4 QByteArray in the shipped build. Keep
-        // direct pointer fallbacks for the two older camera-source layouts.
-        const bool found = tryQtByteArray(object, 0x00, width, height, source)
-                        || tryQtByteArray(object, 0x08, width, height, source)
-                        || tryRawPointer(object, 0x00, 0x04, width, height, source)
-                        || tryRawPointer(object, 0x08, 0x0c, width, height, source)
-                        || tryRawPointer(object, 0x10, 0x14, width, height, source)
-                        || tryRawPointer(object, 0x14, 0x18, width, height, source);
-        if (! found) return false;
+        if (! tryMoLiXiuImageBlock(object, width, height, source)) return false;
 
         const auto sequence = static_cast<DWORD>(InterlockedIncrement(&frameNumber) * 2 - 1);
         InterlockedExchange(reinterpret_cast<volatile LONG*>(&frameHeader->sequence), static_cast<LONG>(sequence));
