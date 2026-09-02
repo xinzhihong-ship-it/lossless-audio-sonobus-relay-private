@@ -496,9 +496,6 @@ void VideoRelayClient::runVideoLoop()
             if (selectedIsMoLiXiu)
             {
                 captureCamera = resolvedMoLiXiu;
-                const auto physicalCamera = findMoLiXiuPhysicalCamera(molixiuSelection, devices);
-                if (physicalCamera.isNotEmpty())
-                    captureCamera = physicalCamera;
             }
 #endif
 
@@ -1666,23 +1663,6 @@ juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selectio
     return {};
 }
 
-juce::String VideoRelayClient::findMoLiXiuPhysicalCamera(const juce::String& selection,
-                                                         const juce::Array<CameraDevice>& devices) const
-{
-    const auto resolved = resolveMoLiXiuCamera(selection, devices);
-    for (const auto& device : devices)
-        if (device.id == resolved && ! isMoLiXiuCamera(device) && ! device.id.startsWith("dshow:"))
-            return device.id;
-
-    juce::String onlyPhysical;
-    for (const auto& device : devices)
-    {
-        if (isMoLiXiuCamera(device) || device.id.startsWith("dshow:")) continue;
-        if (onlyPhysical.isNotEmpty()) return {};
-        onlyPhysical = device.id;
-    }
-    return onlyPhysical;
-}
 #endif
 
 juce::StringArray VideoRelayClient::availableEncoders(const juce::String& ffmpegPath) const
