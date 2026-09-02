@@ -162,6 +162,8 @@ juce::String cameraFailureMessage(const juce::String& output)
         return sonobus::video::translated(u8"摄像头共享帧超时")
              + (detail.isNotEmpty() ? " (" + detail + ")" : juce::String());
     }
+    if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:molixiu-frame-timeout"))
+        return sonobus::video::translated(u8"未收到魔力秀进程内摄像头帧；请先让魔力秀开始输出摄像头");
     if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:frame-timeout"))
         return sonobus::video::translated(u8"摄像头共享帧超时；请检查火绒和其他摄像头占用程序");
     if (output.containsIgnoreCase("SONOBUS_ERROR=unavailable:"))
@@ -185,23 +187,6 @@ juce::String cameraFailureMessage(const juce::String& output)
     return {};
 }
 
-#if JUCE_WINDOWS
-juce::String normalizeMoLiXiuSelector(juce::String value)
-{
-    value = value.trim();
-    if (value.startsWithIgnoreCase("video=")) value = value.substring(6).trim();
-    if (value.startsWithIgnoreCase("dshow:")) value = value.substring(6).trim();
-    if (value.startsWithIgnoreCase("@device:sw:")) value = "@device_sw_" + value.substring(11);
-    return value;
-}
-
-juce::String moLiXiuDeviceFamily(const juce::String& value)
-{
-    const auto normalized = normalizeMoLiXiuSelector(value);
-    const auto separator = normalized.indexOfChar('\\');
-    return separator > 0 ? normalized.substring(0, separator + 1) : juce::String();
-}
-#endif
 }
 
 VideoRelayClient::VideoRelayClient()
@@ -337,7 +322,6 @@ void VideoRelayClient::runVideoLoop()
     double nextPublisherAttemptMs = 0.0;
     double nextDeviceRefreshMs = 0.0;
     double nextMoLiXiuAttachMs = 0.0;
-    bool molixiuMultiRegistrationAttempted = false;
     int deviceRefreshDelayMs = 1000;
     while (! threadShouldExit())
     {
@@ -396,10 +380,22 @@ void VideoRelayClient::runVideoLoop()
 
         const auto now = juce::Time::getMillisecondCounter();
         const auto nowHi = juce::Time::getMillisecondCounterHiRes();
+        const auto selectedCamera = desired.cameraDeviceId;
+        bool selectedIsMoLiXiu = false;
+#if JUCE_WINDOWS
+        for (const auto& device : devices)
+        {
+            if (device.id != selectedCamera) continue;
+            selectedIsMoLiXiu = isMoLiXiuCamera(device);
+            break;
+        }
+        if (! selectedIsMoLiXiu)
+            selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
+#endif
         bool selectedMissing = desired.cameraDeviceId.isNotEmpty();
         for (const auto& device : devices)
             if (device.id == desired.cameraDeviceId) selectedMissing = false;
-        const bool unavailable = devices.isEmpty() || selectedMissing;
+        const bool unavailable = ! selectedIsMoLiXiu && (devices.isEmpty() || selectedMissing);
         if ((unavailable && nowHi >= nextDeviceRefreshMs) || (! unavailable && now - lastDeviceRefresh >= 5000))
         {
             enumerationError.clear();
@@ -437,7 +433,7 @@ void VideoRelayClient::runVideoLoop()
             stopPublisher();
             setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"后台尚未选择摄像头"));
         }
-        else if (devices.isEmpty())
+        else if (devices.isEmpty() && ! selectedIsMoLiXiu)
         {
             stopPublisher();
             setStatus(Status::cameraUnavailable, enumerationError.isNotEmpty() ? enumerationError
@@ -445,47 +441,7 @@ void VideoRelayClient::runVideoLoop()
         }
         else
         {
-            const auto selectedCamera = desired.cameraDeviceId;
-            bool selectedIsMoLiXiu = false;
 #if JUCE_WINDOWS
-            for (const auto& device : devices)
-            {
-                if (device.id != selectedCamera) continue;
-                selectedIsMoLiXiu = isMoLiXiuCamera(device);
-                break;
-            }
-            if (! selectedIsMoLiXiu)
-                selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
-
-            if (selectedIsMoLiXiu && ! molixiuMultiRegistrationAttempted)
-            {
-                registerMoLiXiuMultiCamera();
-                molixiuMultiRegistrationAttempted = true;
-                enumerationError.clear();
-                devices = getCameraDevices(ffmpegPath, enumerationError);
-                lastDeviceRefresh = now;
-                const juce::ScopedLock lock(stateLock);
-                cameras = devices;
-                cameraError = enumerationError;
-            }
-
-            const auto molixiuSelection = readMoLiXiuSelection();
-            auto resolvedMoLiXiu = resolveMoLiXiuCamera(molixiuSelection, devices);
-            if (resolvedMoLiXiu.isEmpty())
-                resolvedMoLiXiu = resolveMoLiXiuCamera(selectedCamera, devices);
-            if (! selectedIsMoLiXiu && resolvedMoLiXiu.isNotEmpty())
-            {
-                const auto selectedFamily = moLiXiuDeviceFamily(selectedCamera);
-                const auto resolvedFamily = moLiXiuDeviceFamily(resolvedMoLiXiu);
-                bool sameName = false;
-                for (const auto& device : devices)
-                    if (device.id == resolvedMoLiXiu)
-                        sameName = normalizeMoLiXiuSelector(selectedCamera).equalsIgnoreCase(
-                            normalizeMoLiXiuSelector(device.name));
-                selectedIsMoLiXiu = (selectedFamily.isNotEmpty() && resolvedFamily.isNotEmpty()
-                                     && selectedFamily.equalsIgnoreCase(resolvedFamily)) || sameName;
-            }
-
             if (selectedIsMoLiXiu && nowHi >= nextMoLiXiuAttachMs)
             {
                 attachMoLiXiuBridge();
@@ -496,15 +452,15 @@ void VideoRelayClient::runVideoLoop()
             auto captureCamera = selectedCamera;
 #if JUCE_WINDOWS
             if (selectedIsMoLiXiu)
-            {
-                captureCamera = resolvedMoLiXiu;
-            }
+                captureCamera = "molixiu-hook";
 #endif
 
             bool cameraAvailable = false;
+#if JUCE_WINDOWS
             if (selectedIsMoLiXiu)
-                cameraAvailable = captureCamera.isNotEmpty();
+                cameraAvailable = findWindowsMoLiXiuBridge().isNotEmpty();
             else
+#endif
                 for (const auto& device : devices)
                     if (device.id == selectedCamera) cameraAvailable = true;
             if (! cameraAvailable)
@@ -553,9 +509,9 @@ void VideoRelayClient::runVideoLoop()
                     lastAttemptRevision = desired.revision;
                     nextPublisherAttemptMs = nowHi + 5000.0;
                     setStatus(Status::startingCamera);
-                    auto mode = captureCamera == runningDesired.cameraDeviceId && runningMode.isValid()
-                                  ? runningMode
-                                  : findPreferredCameraMode(ffmpegPath, captureCamera);
+                    auto mode = selectedIsMoLiXiu ? CameraMode { 1280, 720, 30.0 }
+                                                  : captureCamera == runningDesired.cameraDeviceId && runningMode.isValid()
+                                                      ? runningMode : findPreferredCameraMode(ffmpegPath, captureCamera);
                     if (! mode.isValid())
                     {
                         setStatus(Status::cameraUnavailable, lastError.isNotEmpty() ? lastError
@@ -564,8 +520,8 @@ void VideoRelayClient::runVideoLoop()
                     else
                     {
                         auto launchDesired = desired;
-                        // MoLiXiu remains the selected virtual output for other applications;
-                        // SonoBus uses YY's separate multi-client mirror.
+                        // Keep MoLiXiu's own virtual output untouched; SonoBus consumes the
+                        // private frame bridge populated from its internal source callback.
                         launchDesired.cameraDeviceId = captureCamera;
                         if (startPublisher(ffmpegPath, devices, launchDesired, mode))
                         {
@@ -1214,6 +1170,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         }
         auto cameraName = desired.cameraDeviceId;
         for (const auto& device : devices) if (device.id == desired.cameraDeviceId) cameraName = device.name;
+        if (desired.cameraDeviceId == "molixiu-hook") cameraName = sonobus::video::translated(u8"魔力秀进程内摄像头");
         {
             const juce::ScopedLock lock(stateLock);
             publisher = std::move(process);
@@ -1563,28 +1520,6 @@ juce::String VideoRelayClient::findWindowsMoLiXiuBridge() const
     return {};
 }
 
-bool VideoRelayClient::registerMoLiXiuMultiCamera()
-{
-    const auto localAppData = juce::SystemStats::getEnvironmentVariable("LOCALAPPDATA", {});
-    if (localAppData.isEmpty()) return false;
-    const auto root = juce::File(localAppData).getChildFile("duowan").getChildFile("yyanchor");
-    for (const auto& service : root.findChildFiles(juce::File::findFiles, true, "YYVCamService.exe"))
-    {
-        juce::ChildProcess process;
-        if (! process.start({ service.getFullPathName(), "--regYYVCam" },
-                            juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
-            continue;
-        if (! process.waitForProcessToFinish(1500))
-        {
-            process.kill();
-            continue;
-        }
-        logMsg("YY multi-client camera registration exit=" + juce::String(process.getExitCode()));
-        return process.getExitCode() == 0;
-    }
-    return false;
-}
-
 void VideoRelayClient::attachMoLiXiuBridge()
 {
     const auto injector = findWindowsMoLiXiuBridge();
@@ -1601,68 +1536,6 @@ void VideoRelayClient::attachMoLiXiuBridge()
     }
     if (process.getExitCode() != 0 && process.getExitCode() != 3)
         logMsg("MoLiXiu bridge attach failed: " + process.readAllProcessOutput().substring(0, 200));
-}
-
-juce::String VideoRelayClient::readMoLiXiuSelection() const
-{
-    const auto path = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                          .getChildFile("SonoBus").getChildFile("molixiu-camera.txt");
-    const auto lines = juce::StringArray::fromLines(path.loadFileAsString());
-    juce::String device;
-    for (const auto& line : lines)
-    {
-        if (line.startsWith("device=")) device = line.substring(7).trim();
-    }
-    // The bridge owns this snapshot. Keep the last real camera when MoLiXiu
-    // turns its virtual output off; the relay must not fall back to that output.
-    return device;
-}
-
-juce::String VideoRelayClient::resolveMoLiXiuCamera(const juce::String& selection,
-                                                    const juce::Array<CameraDevice>& devices) const
-{
-    auto selector = normalizeMoLiXiuSelector(selection);
-    if (selector.isEmpty()) return {};
-
-    const auto preferMultiClient = [&devices](const juce::String& candidate)
-    {
-        const auto normalized = normalizeMoLiXiuSelector(candidate);
-        const auto separator = normalized.lastIndexOfChar('\\');
-        if (separator <= 0) return candidate;
-        const auto tail = normalized.substring(separator + 1);
-        if (! tail.equalsIgnoreCase("yyanchorvcam") && ! tail.equalsIgnoreCase("yyanchormulvcam"))
-            return candidate;
-        const auto sharedSelector = normalized.substring(0, separator + 1) + "yyanchormulvcam";
-        for (const auto& device : devices)
-            if (normalizeMoLiXiuSelector(device.id).equalsIgnoreCase(sharedSelector)) return device.id;
-        return tail.equalsIgnoreCase("yyanchorvcam") ? "dshow:" + sharedSelector : candidate;
-    };
-
-    for (const auto& device : devices)
-    {
-        auto deviceSelector = normalizeMoLiXiuSelector(device.id);
-        if (deviceSelector.equalsIgnoreCase(selector)) return preferMultiClient(device.id);
-    }
-
-    auto findUniqueName = [&devices](const juce::String& name)
-    {
-        juce::String match;
-        for (const auto& device : devices)
-        {
-            if (! device.name.equalsIgnoreCase(name)) continue;
-            if (match.isNotEmpty()) return juce::String();
-            match = device.id;
-        }
-        return match;
-    };
-    auto match = findUniqueName(selector);
-    if (match.isNotEmpty()) return preferMultiClient(match);
-
-    const auto tail = selector.fromLastOccurrenceOf("\\", false, false).trim();
-    if (tail != selector) match = findUniqueName(tail);
-    if (match.isNotEmpty()) return preferMultiClient(match);
-    if (selector.startsWithIgnoreCase("@device_sw_")) return preferMultiClient("dshow:" + selector);
-    return {};
 }
 
 #endif
@@ -1713,7 +1586,12 @@ juce::StringArray VideoRelayClient::publisherArguments(const juce::String& ffmpe
                                                         const DesiredState& desired) const
 {
 #if JUCE_WINDOWS
-    auto arguments = juce::StringArray { findWindowsCaptureHelper(), "--publish", "--device", cameraDeviceId,
+    auto arguments = cameraDeviceId == "molixiu-hook"
+                   ? juce::StringArray { findWindowsCaptureHelper(), "--publish-molixiu", "--ffmpeg", ffmpegPath,
+                                         "--max-height", juce::String(desired.maxHeight), "--max-fps",
+                                         juce::String(desired.maxFps, 3), "--max-bitrate", juce::String(desired.maxBitrate),
+                                         "--parent-pid", juce::String(static_cast<juce::int64>(GetCurrentProcessId())), "--" }
+                   : juce::StringArray { findWindowsCaptureHelper(), "--publish", "--device", cameraDeviceId,
                                          "--ffmpeg", ffmpegPath, "--max-height", juce::String(desired.maxHeight),
                                          "--max-fps", juce::String(desired.maxFps, 3), "--max-bitrate",
                                          juce::String(desired.maxBitrate), "--parent-pid",
@@ -1785,7 +1663,7 @@ juce::String VideoRelayClient::getStatusText() const
         case Status::awaitingAuthorization: return sonobus::video::translated(u8"等待后台管理员授权；无需输入授权码");
         case Status::connecting:        return sonobus::video::translated(u8"连接管理员控制服务中");
         case Status::waitingForAdmin:   return sonobus::video::translated(u8"已连接，等待管理员开启摄像头");
-        case Status::startingCamera:    return sonobus::video::translated(u8"读取当前共享最高模式并启动 H.264 编码");
+        case Status::startingCamera:    return sonobus::video::translated(u8"读取摄像头帧并启动 H.264 编码");
         case Status::online:
         {
             auto text = sonobus::video::translated(u8"H.264 视频在线");

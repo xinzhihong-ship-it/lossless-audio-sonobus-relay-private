@@ -106,11 +106,7 @@ private:
 #if JUCE_WINDOWS
     bool isMoLiXiuCamera(const CameraDevice& device) const;
     juce::String findWindowsMoLiXiuBridge() const;
-    bool registerMoLiXiuMultiCamera();
     void attachMoLiXiuBridge();
-    juce::String readMoLiXiuSelection() const;
-    juce::String resolveMoLiXiuCamera(const juce::String& selection,
-                                      const juce::Array<CameraDevice>& devices) const;
 #endif
     juce::StringArray availableEncoders(const juce::String& ffmpegPath) const;
     juce::StringArray captureArguments(const juce::String& cameraDeviceId, CameraMode mode) const;

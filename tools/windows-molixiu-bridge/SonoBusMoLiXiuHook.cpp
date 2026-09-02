@@ -3,6 +3,9 @@
 
 #include <windows.h>
 
+#include "SonoBusMoLiXiuFrame.h"
+
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
@@ -46,6 +49,9 @@ volatile LONG callbackProbeCount = 0;
 volatile LONG callbackCallProbeCount = 0;
 void* callbackOriginals[16] {};
 void* patchedCallbackVtable = nullptr;
+HANDLE frameMapping = nullptr;
+sonobus::molixiu::FrameHeader* frameHeader = nullptr;
+volatile LONG frameNumber = 0;
 
 void appendCallbackProbe(const char* source, const void* callback, const void* control) noexcept;
 void appendCallbackCallProbe(int slot, const void* stack) noexcept;
@@ -205,6 +211,198 @@ extern "C" bool __cdecl queueCurrentDevice(const void* realCamera) noexcept
     }
 }
 
+bool readable(const void* address, SIZE_T bytes) noexcept
+{
+    if (address == nullptr || bytes == 0) return false;
+    auto* cursor = static_cast<const unsigned char*>(address);
+    while (bytes != 0)
+    {
+        MEMORY_BASIC_INFORMATION info {};
+        if (VirtualQuery(cursor, &info, sizeof(info)) != sizeof(info)
+            || info.State != MEM_COMMIT
+            || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+            return false;
+        const auto regionEnd = static_cast<const unsigned char*>(info.BaseAddress) + info.RegionSize;
+        if (cursor >= regionEnd) return false;
+        const auto available = static_cast<SIZE_T>(regionEnd - cursor);
+        if (available >= bytes) return true;
+        bytes -= available;
+        cursor = regionEnd;
+    }
+    return true;
+}
+
+bool readWord(const unsigned char* object, SIZE_T offset, DWORD& value) noexcept
+{
+    __try
+    {
+        value = *reinterpret_cast<const DWORD*>(object + offset);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+struct RawFrame
+{
+    const unsigned char* data = nullptr;
+    DWORD bytes = 0;
+    DWORD stride = 0;
+    DWORD pixelFormat = sonobus::molixiu::kPixelBgr24;
+};
+
+bool classifyRawFrame(const unsigned char* data, DWORD bytes, DWORD width, DWORD height, RawFrame& output) noexcept
+{
+    if (data == nullptr || bytes == 0 || width < 2 || height < 2
+        || width > 8192 || height > 8192 || bytes > sonobus::molixiu::kMaxFrameBytes)
+        return false;
+
+    const auto pixels = static_cast<std::uint64_t>(width) * height;
+    const DWORD packedFormats[] { sonobus::molixiu::kPixelBgr24, sonobus::molixiu::kPixelBgra32,
+                                  sonobus::molixiu::kPixelYuy2, sonobus::molixiu::kPixelNv12 };
+    const std::uint64_t packedSizes[] { pixels * 3, pixels * 4, pixels * 2, pixels * 3 / 2 };
+    for (size_t index = 0; index < std::size(packedFormats); ++index)
+    {
+        if (packedSizes[index] != bytes) continue;
+        if (! readable(data, bytes)) return false;
+        output = { data, bytes, index == 3 ? width : static_cast<DWORD>(packedSizes[index] / height),
+                   packedFormats[index] };
+        return true;
+    }
+
+    if (bytes % height != 0) return false;
+    const auto stride = bytes / height;
+    for (size_t index = 0; index < 3; ++index)
+    {
+        const auto rowBytes = packedSizes[index] / height;
+        if (stride < rowBytes || stride > rowBytes + 4096) continue;
+        if (! readable(data, bytes)) return false;
+        output = { data, bytes, stride, packedFormats[index] };
+        return true;
+    }
+    return false;
+}
+
+bool tryRawPointer(const unsigned char* object, SIZE_T pointerOffset, SIZE_T sizeOffset,
+                   DWORD width, DWORD height, RawFrame& output) noexcept
+{
+    DWORD pointer = 0;
+    DWORD bytes = 0;
+    if (! readWord(object, pointerOffset, pointer) || ! readWord(object, sizeOffset, bytes)) return false;
+    return classifyRawFrame(reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(pointer)),
+                             bytes, width, height, output);
+}
+
+bool tryQtByteArray(const unsigned char* object, SIZE_T pointerOffset,
+                    DWORD width, DWORD height, RawFrame& output) noexcept
+{
+    DWORD storage = 0;
+    if (! readWord(object, pointerOffset, storage)) return false;
+    const auto* bytes = reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(storage));
+    if (! readable(bytes, 12)) return false;
+    DWORD size = 0;
+    if (! readWord(bytes, 8, size)) return false;
+    return classifyRawFrame(bytes + 12, size, width, height, output);
+}
+
+bool copyMoLiXiuFrame(const void* videoData) noexcept
+{
+    if (frameHeader == nullptr || videoData == nullptr) return false;
+    __try
+    {
+        const auto* object = static_cast<const unsigned char*>(videoData);
+        DWORD width = 0;
+        DWORD height = 0;
+        if (! readWord(object, 0x18, width) || ! readWord(object, 0x1c, height)) return false;
+
+        RawFrame source;
+        // VideoData stores its bytes in a Qt4 QByteArray in the shipped build. Keep
+        // direct pointer fallbacks for the two older camera-source layouts.
+        const bool found = tryQtByteArray(object, 0x00, width, height, source)
+                        || tryQtByteArray(object, 0x08, width, height, source)
+                        || tryRawPointer(object, 0x00, 0x04, width, height, source)
+                        || tryRawPointer(object, 0x08, 0x0c, width, height, source)
+                        || tryRawPointer(object, 0x10, 0x14, width, height, source)
+                        || tryRawPointer(object, 0x14, 0x18, width, height, source);
+        if (! found) return false;
+
+        const auto sequence = static_cast<DWORD>(InterlockedIncrement(&frameNumber) * 2 - 1);
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&frameHeader->sequence), static_cast<LONG>(sequence));
+        auto* destination = reinterpret_cast<unsigned char*>(frameHeader) + sizeof(*frameHeader);
+        const auto rowBytes = source.pixelFormat == sonobus::molixiu::kPixelBgr24 ? width * 3
+                             : source.pixelFormat == sonobus::molixiu::kPixelBgra32 ? width * 4
+                             : source.pixelFormat == sonobus::molixiu::kPixelYuy2 ? width * 2
+                             : source.bytes;
+        if (source.pixelFormat == sonobus::molixiu::kPixelNv12 || source.stride == rowBytes)
+            std::memcpy(destination, source.data, source.bytes);
+        else
+            for (DWORD row = 0; row < height; ++row)
+                std::memcpy(destination + static_cast<SIZE_T>(row) * rowBytes,
+                            source.data + static_cast<SIZE_T>(row) * source.stride, rowBytes);
+
+        frameHeader->magic = sonobus::molixiu::kFrameMagic;
+        frameHeader->version = sonobus::molixiu::kFrameVersion;
+        frameHeader->width = width;
+        frameHeader->height = height;
+        frameHeader->stride = source.pixelFormat == sonobus::molixiu::kPixelNv12 ? width : rowBytes;
+        frameHeader->pixelFormat = source.pixelFormat;
+        frameHeader->bytes = source.pixelFormat == sonobus::molixiu::kPixelNv12
+                           ? source.bytes : rowBytes * height;
+        frameHeader->frameNumber = static_cast<DWORD>(InterlockedCompareExchange(&frameNumber, 0, 0));
+        frameHeader->reserved = 30000; // nominal source rate in milli-fps
+        MemoryBarrier();
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&frameHeader->sequence), sequence + 1);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+void copyCallbackFrame(const void* stack) noexcept
+{
+    if (stack == nullptr) return;
+    __try
+    {
+        const auto* words = static_cast<const DWORD*>(stack);
+        const auto firstArgument = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(words[2]));
+        if (firstArgument == nullptr) return;
+        if (copyMoLiXiuFrame(firstArgument)) return;
+
+        // A boost::shared_ptr can be passed either by value (raw VideoData is the
+        // first stack word) or by reference (the first word points to that raw
+        // VideoData pointer). Accept both ABI forms without touching ownership.
+        DWORD rawVideoData = 0;
+        if (readWord(static_cast<const unsigned char*>(firstArgument), 0, rawVideoData))
+            copyMoLiXiuFrame(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(rawVideoData)));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
+bool createFrameMapping() noexcept
+{
+    if (frameHeader != nullptr) return true;
+    frameMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                      sonobus::molixiu::kFrameMappingBytes,
+                                      sonobus::molixiu::kFrameMappingName);
+    if (frameMapping == nullptr) return false;
+    frameHeader = static_cast<sonobus::molixiu::FrameHeader*>(MapViewOfFile(
+        frameMapping, FILE_MAP_ALL_ACCESS, 0, 0, sonobus::molixiu::kFrameMappingBytes));
+    if (frameHeader == nullptr)
+    {
+        CloseHandle(frameMapping);
+        frameMapping = nullptr;
+        return false;
+    }
+    std::memset(frameHeader, 0, sizeof(*frameHeader));
+    return true;
+}
+
 void appendVideoProbe(const void* videoData) noexcept
 {
     if (videoData == nullptr || InterlockedIncrement(&videoProbeCount) > 8) return;
@@ -331,6 +529,10 @@ extern "C" __declspec(naked) void hookCallback0()
     {
         pushfd
         pushad
+        lea eax, [esp + 36]
+        push eax
+        call copyCallbackFrame
+        add esp, 4
         lea eax, [esp + 36]
         push eax
         push 0
@@ -587,27 +789,20 @@ void patchCallbackVtable(const void* vtable) noexcept
     if (vtable == nullptr || InterlockedCompareExchangePointer(&patchedCallbackVtable,
                                                                  const_cast<void*>(vtable), nullptr) != nullptr)
         return;
-    const void* wrappers[] = { &hookCallback0, &hookCallback1, &hookCallback2, &hookCallback3,
-                               &hookCallback4, &hookCallback5, &hookCallback6, &hookCallback7,
-                               &hookCallback8, &hookCallback9, &hookCallback10, &hookCallback11,
-                               &hookCallback12, &hookCallback13, &hookCallback14, &hookCallback15 };
-    for (int index = 0; index < 16; ++index)
-    {
-        const auto entry = reinterpret_cast<const void* const*>(vtable)[index];
-        HMODULE owner = nullptr;
-        if (entry == nullptr || ! GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
-                                                       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                                       static_cast<LPCWSTR>(entry), &owner))
-            continue;
-        DWORD oldProtection = 0;
-        auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable)) + index;
-        if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) continue;
-        callbackOriginals[index] = const_cast<void*>(entry);
-        *slot = const_cast<void*>(wrappers[index]);
-        DWORD ignored = 0;
-        VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
-    }
-    FlushInstructionCache(GetCurrentProcess(), const_cast<void*>(vtable), 16 * sizeof(void*));
+    const auto entry = reinterpret_cast<const void* const*>(vtable)[0];
+    HMODULE owner = nullptr;
+    if (entry == nullptr || ! GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                                   | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                                   static_cast<LPCWSTR>(entry), &owner))
+        return;
+    DWORD oldProtection = 0;
+    auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable));
+    if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) return;
+    callbackOriginals[0] = const_cast<void*>(entry);
+    *slot = const_cast<void*>(&hookCallback0);
+    DWORD ignored = 0;
+    VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), const_cast<void*>(vtable), sizeof(void*));
 }
 
 void probeWeakCallback(const void* weakPointer) noexcept
@@ -734,6 +929,11 @@ extern "C" __declspec(naked) void hookOnVideoSource()
         mov edx, [esp + 40]
         mov edx, [edx]
         push edx
+        call copyMoLiXiuFrame
+        add esp, 4
+        mov edx, [esp + 40]
+        mov edx, [edx]
+        push edx
         call appendVideoProbe
         add esp, 4
         popad
@@ -818,6 +1018,7 @@ DWORD WINAPI bridgeThread(void*)
         if (cameraCore == nullptr) Sleep(100);
     }
     if (cameraCore == nullptr) return 0;
+    createFrameMapping();
 
     const auto setCurrentDevice = GetProcAddress(cameraCore,
         "?setCurrentDevice@RealCamera@@QAEXABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
@@ -878,6 +1079,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 
 extern "C" __declspec(dllexport) int __cdecl SonoBusMoLiXiuLayoutSelfTest()
 {
+    if (sizeof(sonobus::molixiu::FrameHeader) != 40
+        || sonobus::molixiu::kFrameMappingBytes <= sonobus::molixiu::kMaxFrameBytes)
+        return 2;
     unsigned char sharedData[sizeof(void*) + kSharedDataPointerOffset] {};
     unsigned char state[sizeof(void*)] {};
     int camera = 0;

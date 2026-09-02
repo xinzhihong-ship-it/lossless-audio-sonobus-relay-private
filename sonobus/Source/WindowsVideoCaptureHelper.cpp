@@ -8,6 +8,7 @@
 #endif
 #include <windows.h>
 #include <mferror.h>
+#include "../../tools/windows-molixiu-bridge/SonoBusMoLiXiuFrame.h"
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.h>
@@ -23,6 +24,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -474,9 +476,21 @@ std::vector<std::wstring> expandOutputArguments(const std::vector<std::wstring>&
     return result;
 }
 
+const wchar_t* ffmpegPixelFormat(uint32_t pixelFormat)
+{
+    switch (pixelFormat)
+    {
+        case sonobus::molixiu::kPixelBgr24: return L"bgr24";
+        case sonobus::molixiu::kPixelBgra32: return L"bgra";
+        case sonobus::molixiu::kPixelYuy2: return L"yuyv422";
+        case sonobus::molixiu::kPixelNv12: return L"nv12";
+        default: return nullptr;
+    }
+}
+
 ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstring>& outputArguments,
                          uint32_t width, uint32_t height, double fps, uint32_t maxHeight,
-                         double maxFps, uint32_t maxBitrate)
+                         double maxFps, uint32_t maxBitrate, uint32_t pixelFormat)
 {
     SECURITY_ATTRIBUTES security { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
     HANDLE inputRead = INVALID_HANDLE_VALUE;
@@ -490,11 +504,18 @@ ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstr
         throw hresult_error(HRESULT_FROM_WIN32(error));
     }
     const auto capture = Mode { width, height, fps, nullptr };
+    const auto inputPixelFormat = ffmpegPixelFormat(pixelFormat);
+    if (inputPixelFormat == nullptr)
+    {
+        CloseHandle(inputRead);
+        CloseHandle(inputWrite);
+        throw hresult_error(MF_E_INVALIDMEDIATYPE, L"Unsupported shared video pixel format.");
+    }
     const auto expandedArguments = expandOutputArguments(outputArguments, capture, maxHeight, maxFps, maxBitrate);
 
     std::vector<std::wstring> arguments {
         ffmpeg, L"-hide_banner", L"-loglevel", L"warning", L"-nostdin",
-        L"-f", L"rawvideo", L"-pixel_format", L"nv12", L"-video_size",
+        L"-f", L"rawvideo", L"-pixel_format", inputPixelFormat, L"-video_size",
         std::to_wstring(width) + L"x" + std::to_wstring(height),
         L"-framerate", std::to_wstring(fps), L"-use_wallclock_as_timestamps", L"1", L"-i", L"pipe:0"
     };
@@ -712,7 +733,7 @@ int publish(const std::vector<std::wstring>& args)
     }
     startReaderForSource(camera, sourceIndex);
     auto child = startFfmpeg(ffmpeg, outputArguments, camera.mode.width, camera.mode.height, camera.mode.fps,
-                             maxHeight, maxFps, maxBitrate);
+                             maxHeight, maxFps, maxBitrate, sonobus::molixiu::kPixelNv12);
     std::cout << "capture_mode=shared\n"
               << "capture_source=" << sourceIndex << '\n'
               << "capture_width=" << camera.mode.width << "\ncapture_height=" << camera.mode.height
@@ -803,6 +824,155 @@ int publish(const std::vector<std::wstring>& args)
     GetExitCodeProcess(child.process.hProcess, &exitCode);
     return static_cast<int>(exitCode);
 }
+
+struct SharedMoLiXiuFrame
+{
+    sonobus::molixiu::FrameHeader header {};
+    std::vector<uint8_t> pixels;
+};
+
+bool readSharedMoLiXiuFrame(const sonobus::molixiu::FrameHeader* mapped, SharedMoLiXiuFrame& output)
+{
+    if (mapped == nullptr) return false;
+    const auto sequence = InterlockedCompareExchange(
+        reinterpret_cast<volatile LONG*>(const_cast<uint32_t*>(&mapped->sequence)), 0, 0);
+    if (sequence <= 0 || (sequence & 1) != 0) return false;
+
+    sonobus::molixiu::FrameHeader header {};
+    std::memcpy(&header, mapped, sizeof(header));
+    if (header.magic != sonobus::molixiu::kFrameMagic
+        || header.version != sonobus::molixiu::kFrameVersion
+        || header.width < 2 || header.height < 2
+        || header.width > 8192 || header.height > 8192
+        || header.bytes == 0 || header.bytes > sonobus::molixiu::kMaxFrameBytes)
+        return false;
+    const auto pixels = static_cast<uint64_t>(header.width) * header.height;
+    const uint64_t expected = header.pixelFormat == sonobus::molixiu::kPixelBgr24 ? pixels * 3
+                            : header.pixelFormat == sonobus::molixiu::kPixelBgra32 ? pixels * 4
+                            : header.pixelFormat == sonobus::molixiu::kPixelYuy2 ? pixels * 2
+                            : header.pixelFormat == sonobus::molixiu::kPixelNv12 ? pixels * 3 / 2 : 0;
+    if (expected == 0 || expected != header.bytes) return false;
+
+    std::vector<uint8_t> frame(header.bytes);
+    std::memcpy(frame.data(), reinterpret_cast<const uint8_t*>(mapped) + sizeof(header), header.bytes);
+    MemoryBarrier();
+    const auto sequenceAfter = InterlockedCompareExchange(
+        reinterpret_cast<volatile LONG*>(const_cast<uint32_t*>(&mapped->sequence)), 0, 0);
+    if (sequenceAfter != sequence || (sequenceAfter & 1) != 0) return false;
+    output.header = header;
+    output.header.sequence = static_cast<uint32_t>(sequenceAfter);
+    output.pixels = std::move(frame);
+    return true;
+}
+
+int publishMoLiXiu(const std::vector<std::wstring>& args)
+{
+    const auto ffmpeg = option(args, L"--ffmpeg");
+    const auto maxHeight = numberOption(args, L"--max-height", 0);
+    const auto maxFps = doubleOption(args, L"--max-fps", 0.0);
+    const auto maxBitrate = numberOption(args, L"--max-bitrate", 0);
+    const auto parentPid = numberOption(args, L"--parent-pid", 0);
+    const auto separator = std::find(args.begin(), args.end(), L"--");
+    if (ffmpeg.empty() || separator == args.end()) return 2;
+    const std::vector<std::wstring> outputArguments(separator + 1, args.end());
+
+    HANDLE parentHandle = parentPid == 0 ? nullptr : OpenProcess(SYNCHRONIZE, FALSE, parentPid);
+    HANDLE mapping = nullptr;
+    auto* mapped = static_cast<sonobus::molixiu::FrameHeader*>(nullptr);
+    ChildProcess child;
+    uint32_t lastSequence = 0;
+    SharedMoLiXiuFrame frame;
+    auto lastFrameAt = std::chrono::steady_clock::now();
+    uint64_t frames = 0;
+    auto fpsWindow = std::chrono::steady_clock::now();
+
+    for (;;)
+    {
+        if (parentHandle != nullptr && WaitForSingleObject(parentHandle, 0) == WAIT_OBJECT_0) break;
+        if (mapping == nullptr)
+        {
+            mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, sonobus::molixiu::kFrameMappingName);
+            if (mapping != nullptr)
+            {
+                mapped = static_cast<sonobus::molixiu::FrameHeader*>(MapViewOfFile(
+                    mapping, FILE_MAP_READ, 0, 0, sonobus::molixiu::kFrameMappingBytes));
+                if (mapped == nullptr)
+                {
+                    CloseHandle(mapping);
+                    mapping = nullptr;
+                }
+            }
+        }
+
+        SharedMoLiXiuFrame next;
+        if (readSharedMoLiXiuFrame(mapped, next) && next.header.sequence != lastSequence)
+        {
+            lastFrameAt = std::chrono::steady_clock::now();
+            const auto fpsValue = next.header.reserved > 0 ? next.header.reserved / 1000.0 : 30.0;
+            const bool formatChanged = frame.header.width != next.header.width
+                                     || frame.header.height != next.header.height
+                                     || frame.header.pixelFormat != next.header.pixelFormat;
+            if (! child.process.hProcess || formatChanged)
+            {
+                if (child.process.hProcess) child = ChildProcess {};
+                try
+                {
+                    child = startFfmpeg(ffmpeg, outputArguments, next.header.width, next.header.height, fpsValue,
+                                        maxHeight, maxFps, maxBitrate, next.header.pixelFormat);
+                    std::cout << "capture_mode=molixiu-hook\n"
+                              << "capture_width=" << next.header.width << "\ncapture_height=" << next.header.height
+                              << "\ncapture_nominal_fps=" << fpsValue << '\n' << std::flush;
+                }
+                catch (const hresult_error& error)
+                {
+                    emitError(error.code(), "molixiu-ffmpeg");
+                    return 3;
+                }
+            }
+            frame = std::move(next);
+            lastSequence = frame.header.sequence;
+        }
+
+        if (child.process.hProcess && WaitForSingleObject(child.process.hProcess, 0) != WAIT_TIMEOUT)
+        {
+            DWORD exitCode = 1;
+            GetExitCodeProcess(child.process.hProcess, &exitCode);
+            return static_cast<int>(exitCode);
+        }
+        if (child.process.hProcess && ! frame.pixels.empty())
+        {
+            DWORD written = 0;
+            size_t offset = 0;
+            while (offset < frame.pixels.size())
+            {
+                const auto chunk = static_cast<DWORD>(std::min<size_t>(frame.pixels.size() - offset, 1024 * 1024));
+                if (!WriteFile(child.input, frame.pixels.data() + offset, chunk, &written, nullptr) || written == 0)
+                    return 4;
+                offset += written;
+            }
+            frame.pixels.clear();
+            ++frames;
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed = std::chrono::duration<double>(now - fpsWindow).count();
+            if (elapsed >= 3.0)
+            {
+                std::cout << "capture_fps=" << frames / elapsed << '\n' << std::flush;
+                frames = 0;
+                fpsWindow = now;
+            }
+        }
+        if (std::chrono::steady_clock::now() - lastFrameAt > std::chrono::seconds(30))
+        {
+            std::cout << "SONOBUS_ERROR=unavailable:molixiu-frame-timeout" << std::endl;
+            return 3;
+        }
+        Sleep(3);
+    }
+    if (mapped != nullptr) UnmapViewOfFile(mapped);
+    if (mapping != nullptr) CloseHandle(mapping);
+    if (parentHandle != nullptr) CloseHandle(parentHandle);
+    return 1;
+}
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -819,6 +989,7 @@ int wmain(int argc, wchar_t** argv)
             const auto device = option(args, L"--device");
             return device.empty() ? 2 : listModes(hstring(device));
         }
+        if (std::find(args.begin(), args.end(), L"--publish-molixiu") != args.end()) return publishMoLiXiu(args);
         if (std::find(args.begin(), args.end(), L"--publish") != args.end()) return publish(args);
         return 2;
     }
