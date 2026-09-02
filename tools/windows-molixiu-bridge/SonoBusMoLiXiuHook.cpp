@@ -55,6 +55,7 @@ volatile LONG frameNumber = 0;
 
 void appendCallbackProbe(const char* source, const void* callback, const void* control) noexcept;
 void appendCallbackCallProbe(int slot, const void* stack) noexcept;
+void appendCallbackCallProbeWithThis(int slot, const void* stack, const void* thisPointer) noexcept;
 void patchCallbackVtable(const void* vtable) noexcept;
 
 bool appendText(wchar_t* target, SIZE_T capacity, SIZE_T& length, const wchar_t* value)
@@ -489,7 +490,7 @@ void appendCallbackProbe(const char* source, const void* callback, const void* c
     }
 }
 
-void appendCallbackCallProbe(int slot, const void* stack) noexcept
+void appendCallbackCallProbeWithThis(int slot, const void* stack, const void* thisPointer) noexcept
 {
     if (stack == nullptr || InterlockedIncrement(&callbackCallProbeCount) > 64) return;
     __try
@@ -508,12 +509,28 @@ void appendCallbackCallProbe(int slot, const void* stack) noexcept
 
         const auto* words = static_cast<const DWORD*>(stack);
         char line[1024] {};
-        int used = wsprintfA(line, "slot=%d ret=%p this=%p", slot,
-                             reinterpret_cast<const void*>(words[0]),
-                             reinterpret_cast<const void*>(words[1]));
-        for (int index = 2; index < 10 && used + 24 < static_cast<int>(std::size(line)); ++index)
-            used += wsprintfA(line + used, " a%d=%p", index - 1,
+        int used = wsprintfA(line, "slot=%d ecx=%p ret=%p", slot, thisPointer,
+                             reinterpret_cast<const void*>(words[0]));
+        for (int index = 1; index < 10 && used + 24 < static_cast<int>(std::size(line)); ++index)
+            used += wsprintfA(line + used, " a%d=%p", index,
                               reinterpret_cast<const void*>(words[index]));
+        const void* candidates[] {
+            thisPointer,
+            reinterpret_cast<const void*>(static_cast<std::uintptr_t>(words[1])),
+            reinterpret_cast<const void*>(static_cast<std::uintptr_t>(words[2])),
+            nullptr
+        };
+        DWORD rawVideoData = 0;
+        if (readWord(static_cast<const unsigned char*>(candidates[1]), 0, rawVideoData))
+            candidates[3] = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(rawVideoData));
+        for (int candidate = 0; candidate < 4 && used + 180 < static_cast<int>(std::size(line)); ++candidate)
+        {
+            if (! readable(candidates[candidate], 64)) continue;
+            used += wsprintfA(line + used, " p%d=", candidate);
+            const auto* bytes = static_cast<const unsigned char*>(candidates[candidate]);
+            for (int index = 0; index < 64 && used + 4 < static_cast<int>(std::size(line)); ++index)
+                used += wsprintfA(line + used, "%02X", bytes[index]);
+        }
         line[used++] = '\r';
         line[used++] = '\n';
         DWORD written = 0;
@@ -523,6 +540,11 @@ void appendCallbackCallProbe(int slot, const void* stack) noexcept
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
     }
+}
+
+void appendCallbackCallProbe(int slot, const void* stack) noexcept
+{
+    appendCallbackCallProbeWithThis(slot, stack, nullptr);
 }
 
 extern "C" __declspec(naked) void hookCallback0()
@@ -536,10 +558,12 @@ extern "C" __declspec(naked) void hookCallback0()
         call copyCallbackFrame
         add esp, 4
         lea eax, [esp + 36]
+        mov edx, [esp + 24]
+        push edx
         push eax
         push 0
-        call appendCallbackCallProbe
-        add esp, 8
+        call appendCallbackCallProbeWithThis
+        add esp, 12
         popad
         popfd
         jmp dword ptr [callbackOriginals + 0]
