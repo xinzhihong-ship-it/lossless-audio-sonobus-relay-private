@@ -423,6 +423,17 @@ void appendVideoProbe(const void* videoData) noexcept
                 used += wsprintfA(line + used, " f%02X=%08lX", offset,
                                   *reinterpret_cast<const DWORD*>(bytes + offset));
         }
+        DWORD imageBlock = 0;
+        if (readWord(bytes, 0x08, imageBlock) && imageBlock != 0)
+        {
+            const auto* image = reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(imageBlock));
+            if (readable(image, 0x20))
+            {
+                used += wsprintfA(line + used, " image=%p imagefields=", image);
+                for (int index = 0; index < 0x20 && used + 4 < static_cast<int>(std::size(line)); ++index)
+                    used += wsprintfA(line + used, "%02X", image[index]);
+            }
+        }
         line[used++] = '\r';
         line[used++] = '\n';
         DWORD written = 0;
