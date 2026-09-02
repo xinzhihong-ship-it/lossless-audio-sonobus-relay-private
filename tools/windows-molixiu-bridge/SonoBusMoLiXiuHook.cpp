@@ -799,7 +799,8 @@ void patchCallbackVtable(const void* vtable) noexcept
     auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable));
     if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) return;
     callbackOriginals[0] = const_cast<void*>(entry);
-    *slot = const_cast<void*>(&hookCallback0);
+    const auto wrapper = reinterpret_cast<const void*>(&hookCallback0);
+    *slot = const_cast<void*>(wrapper);
     DWORD ignored = 0;
     VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
     FlushInstructionCache(GetCurrentProcess(), const_cast<void*>(vtable), sizeof(void*));
