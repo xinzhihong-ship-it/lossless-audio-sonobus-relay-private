@@ -508,7 +508,7 @@ void appendCallbackCallProbeWithThis(int slot, const void* stack, const void* th
         if (file == INVALID_HANDLE_VALUE) return;
 
         const auto* words = static_cast<const DWORD*>(stack);
-        char line[1024] {};
+        char line[12288] {};
         int used = wsprintfA(line, "slot=%d ecx=%p ret=%p", slot, thisPointer,
                              reinterpret_cast<const void*>(words[0]));
         for (int index = 1; index < 10 && used + 24 < static_cast<int>(std::size(line)); ++index)
@@ -529,6 +529,13 @@ void appendCallbackCallProbeWithThis(int slot, const void* stack, const void* th
             used += wsprintfA(line + used, " p%d=", candidate);
             const auto* bytes = static_cast<const unsigned char*>(candidates[candidate]);
             for (int index = 0; index < 64 && used + 4 < static_cast<int>(std::size(line)); ++index)
+                used += wsprintfA(line + used, "%02X", bytes[index]);
+        }
+        if (rawVideoData != 0 && readable(candidates[3], 1024))
+        {
+            used += wsprintfA(line + used, " raw=%p rawbytes=", candidates[3]);
+            const auto* bytes = static_cast<const unsigned char*>(candidates[3]);
+            for (int index = 0; index < 1024 && used + 2 < static_cast<int>(std::size(line)); ++index)
                 used += wsprintfA(line + used, "%02X", bytes[index]);
         }
         line[used++] = '\r';
