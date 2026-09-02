@@ -368,7 +368,9 @@ void copyCallbackFrame(const void* stack) noexcept
     __try
     {
         const auto* words = static_cast<const DWORD*>(stack);
-        const auto firstArgument = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(words[2]));
+        // SourceDataCallBack is an x86 __thiscall method: ECX is `this` and
+        // the first real argument starts at the first stack word after ret.
+        const auto firstArgument = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(words[1]));
         if (firstArgument == nullptr) return;
         if (copyMoLiXiuFrame(firstArgument)) return;
 
@@ -927,11 +929,8 @@ extern "C" __declspec(naked) void hookOnVideoSource()
     {
         pushfd
         pushad
-        mov edx, [esp + 40]
-        mov edx, [edx]
-        push edx
-        call copyMoLiXiuFrame
-        add esp, 4
+        // onVideoSource receives MoLiXiu's composed/output frame. Do not use
+        // it as the camera source: it can be a video file or a black frame.
         mov edx, [esp + 40]
         mov edx, [edx]
         push edx
