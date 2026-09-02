@@ -319,11 +319,12 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
         session.reader = nullptr;
         return false;
     };
-    // Some camera drivers expose the stream but reject an NV12 frame reader at start.
-    // Bgra8 is accepted by those drivers and copyNv12 converts it before FFmpeg input.
-    if (! startReader(hstring())
+    // Some camera drivers accept the default reader but deliver empty media frames.
+    // Request concrete pixel formats so a successful reader also carries video data.
+    if (! startReader(MediaEncodingSubtypes::Bgra8())
+        && ! startReader(MediaEncodingSubtypes::Argb32())
         && ! startReader(MediaEncodingSubtypes::Nv12())
-        && ! startReader(MediaEncodingSubtypes::Bgra8()))
+        && ! startReader(MediaEncodingSubtypes::Yuy2()))
     {
         std::cout << "SONOBUS_ERROR=unavailable:reader-start" << std::endl;
         throw hresult_error(E_FAIL, L"The shared camera frame reader could not start.");
