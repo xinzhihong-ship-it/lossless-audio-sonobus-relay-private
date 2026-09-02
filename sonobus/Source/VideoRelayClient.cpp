@@ -470,7 +470,9 @@ void VideoRelayClient::runVideoLoop()
             }
 
             const auto molixiuSelection = readMoLiXiuSelection();
-            const auto resolvedMoLiXiu = resolveMoLiXiuCamera(molixiuSelection, devices);
+            auto resolvedMoLiXiu = resolveMoLiXiuCamera(molixiuSelection, devices);
+            if (resolvedMoLiXiu.isEmpty())
+                resolvedMoLiXiu = resolveMoLiXiuCamera(selectedCamera, devices);
             if (! selectedIsMoLiXiu && resolvedMoLiXiu.isNotEmpty())
             {
                 const auto selectedFamily = moLiXiuDeviceFamily(selectedCamera);
