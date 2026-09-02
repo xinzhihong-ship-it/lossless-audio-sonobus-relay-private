@@ -568,6 +568,10 @@ extern "C" __declspec(naked) void hookCallback1()
         pushad
         lea eax, [esp + 36]
         push eax
+        call copyCallbackFrame
+        add esp, 4
+        lea eax, [esp + 36]
+        push eax
         push 1
         call appendCallbackCallProbe
         add esp, 8
@@ -806,17 +810,19 @@ void patchCallbackVtable(const void* vtable) noexcept
     if (vtable == nullptr || InterlockedCompareExchangePointer(&patchedCallbackVtable,
                                                                  const_cast<void*>(vtable), nullptr) != nullptr)
         return;
-    const auto entry = reinterpret_cast<const void* const*>(vtable)[0];
+    // VideoData is delivered by SourceDataCallBack's second virtual method.
+    // Slot 0 is the unrelated first method and never receives video frames.
+    const auto entry = reinterpret_cast<const void* const*>(vtable)[1];
     HMODULE owner = nullptr;
     if (entry == nullptr || ! GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                                                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                                    static_cast<LPCWSTR>(entry), &owner))
         return;
     DWORD oldProtection = 0;
-    auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable));
+    auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable)) + 1;
     if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) return;
-    callbackOriginals[0] = const_cast<void*>(entry);
-    const auto wrapper = reinterpret_cast<const void*>(&hookCallback0);
+    callbackOriginals[1] = const_cast<void*>(entry);
+    const auto wrapper = reinterpret_cast<const void*>(&hookCallback1);
     *slot = const_cast<void*>(wrapper);
     DWORD ignored = 0;
     VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
