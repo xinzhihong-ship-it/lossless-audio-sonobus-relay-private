@@ -207,7 +207,7 @@ extern "C" bool __cdecl queueCurrentDevice(const void* realCamera) noexcept
 
 void appendVideoProbe(const void* videoData) noexcept
 {
-    if (videoData == nullptr || InterlockedIncrement(&videoProbeCount) > 30) return;
+    if (videoData == nullptr || InterlockedIncrement(&videoProbeCount) > 8) return;
     __try
     {
         wchar_t appData[MAX_PATH] {};
@@ -222,11 +222,22 @@ void appendVideoProbe(const void* videoData) noexcept
                                       nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) return;
 
-        char line[2048] {};
-        int used = wsprintfA(line, "video=%p", videoData);
+        char line[8192] {};
+        int used = wsprintfA(line, "video=%p fields", videoData);
         const auto bytes = static_cast<const unsigned char*>(videoData);
-        for (int index = 0; index < 128 && used + 4 < static_cast<int>(std::size(line)); ++index)
+        for (int index = 0; index < 512 && used + 4 < static_cast<int>(std::size(line)); ++index)
             used += wsprintfA(line + used, " %02X", bytes[index]);
+        const int offsets[] { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x21, 0x22, 0x23,
+                              0x24, 0x28, 0x2c, 0x30, 0x34, 0x38, 0x3c };
+        for (const auto offset : offsets)
+        {
+            if (offset == 0x21 || offset == 0x22 || offset == 0x23 || offset == 0x24)
+                used += wsprintfA(line + used, " f%02X=%02X", offset,
+                                  static_cast<unsigned int>(bytes[offset]));
+            else
+                used += wsprintfA(line + used, " f%02X=%08lX", offset,
+                                  *reinterpret_cast<const DWORD*>(bytes + offset));
+        }
         line[used++] = '\r';
         line[used++] = '\n';
         DWORD written = 0;
