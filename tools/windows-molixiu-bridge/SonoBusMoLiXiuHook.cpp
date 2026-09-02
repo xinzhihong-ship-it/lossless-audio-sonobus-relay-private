@@ -958,7 +958,12 @@ extern "C" __declspec(naked) void hookOnVideoSource()
         pushfd
         pushad
         // onVideoSource receives MoLiXiu's composed/output frame. Do not use
-        // it as the camera source: it can be a video file or a black frame.
+        // it as the camera source when it is not a live camera frame.
+        mov edx, [esp + 40]
+        mov edx, [edx]
+        push edx
+        call copyMoLiXiuFrame
+        add esp, 4
         mov edx, [esp + 40]
         mov edx, [edx]
         push edx
