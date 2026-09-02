@@ -810,27 +810,30 @@ void patchCallbackVtable(const void* vtable) noexcept
     if (vtable == nullptr || InterlockedCompareExchangePointer(&patchedCallbackVtable,
                                                                  const_cast<void*>(vtable), nullptr) != nullptr)
         return;
-    // VideoData is delivered by SourceDataCallBack's second virtual method.
-    // Slot 0 is the unrelated first method and never receives video frames.
-    const auto entry = reinterpret_cast<const void* const*>(vtable)[1];
-    if (entry == nullptr)
+    // The 2021 callback ABI has two candidate video methods across the x86
+    // builds seen in the wild. Hook both; each wrapper preserves its own
+    // original entry and only copies a frame when the argument matches.
+    const auto* entries = reinterpret_cast<const void* const*>(vtable);
+    const void* wrappers[] { reinterpret_cast<const void*>(&hookCallback0),
+                             reinterpret_cast<const void*>(&hookCallback1) };
+    int patched = 0;
+    for (int index = 0; index < 2; ++index)
     {
-        InterlockedExchangePointer(&patchedCallbackVtable, nullptr);
-        return;
+        const auto entry = entries[index];
+        if (entry == nullptr) continue;
+        DWORD oldProtection = 0;
+        auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable)) + index;
+        if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) continue;
+        callbackOriginals[index] = const_cast<void*>(entry);
+        *slot = const_cast<void*>(wrappers[index]);
+        DWORD ignored = 0;
+        VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
+        ++patched;
     }
-    DWORD oldProtection = 0;
-    auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable)) + 1;
-    if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection))
-    {
+    if (patched == 0)
         InterlockedExchangePointer(&patchedCallbackVtable, nullptr);
-        return;
-    }
-    callbackOriginals[1] = const_cast<void*>(entry);
-    const auto wrapper = reinterpret_cast<const void*>(&hookCallback1);
-    *slot = const_cast<void*>(wrapper);
-    DWORD ignored = 0;
-    VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), const_cast<void*>(vtable), sizeof(void*));
+    else
+        FlushInstructionCache(GetCurrentProcess(), const_cast<void*>(vtable), sizeof(void*) * 2);
 }
 
 void probeWeakCallback(const void* weakPointer) noexcept
