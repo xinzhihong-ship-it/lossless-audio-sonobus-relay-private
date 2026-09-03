@@ -155,13 +155,13 @@ export function buildFfmpegArgs(config: GroupMediaManagerConfig, group: string):
   return [
     "-hide_banner", "-loglevel", "warning", "-nostdin",
     "-rtsp_transport", "tcp", "-fflags", "nobuffer", "-flags", "low_delay",
-    "-analyzeduration", "0", "-probesize", "32768", "-use_wallclock_as_timestamps", "1", "-i", inputUrl,
-    "-thread_queue_size", "1024", "-use_wallclock_as_timestamps", "1", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
+    "-analyzeduration", "0", "-probesize", "32768", "-i", inputUrl,
+    "-thread_queue_size", "1024", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
     "-map", "0:v:0", "-map", "1:a:0",
     "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
     "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-x264-params", "repeat-headers=1",
     "-c:a", "libopus", "-b:a", "160k", "-application", "lowdelay", "-frame_duration", "10", "-af", "aresample=async=1:first_pts=0",
-    "-max_interleave_delta", "0", "-muxdelay", "0", "-f", "rtsp", "-rtsp_transport", "tcp", outputUrl
+    "-max_interleave_delta", "1000000", "-muxdelay", "0", "-f", "rtsp", "-rtsp_transport", "tcp", outputUrl
   ];
 }
 
