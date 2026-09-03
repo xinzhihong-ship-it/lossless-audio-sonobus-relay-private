@@ -392,12 +392,29 @@ extern "C" __declspec(naked) void hookCallback0()
         pushfd
         pushad
         lea eax, [esp + 36]
+        sub esp, 8
+        mov [esp], eax
+        mov edx, [esp + 8]
+        mov [esp + 4], edx
+        mov [esp + 8], eax
+        add esp, 8
+        popad
+        popfd
+        mov eax, [edi + 4]
+        push eax
+        call dword ptr [callbackOriginals + 0]
+        pushfd
+        pushad
+        mov eax, [esp]
         push eax
         call copyCallbackFrame
         add esp, 4
+        mov eax, [esp]
+        mov edx, [eax - 40]
+        mov [esp], edx
         popad
         popfd
-        jmp dword ptr [callbackOriginals + 0]
+        ret 4
     }
 }
 extern "C" __declspec(naked) void hookCallback1()
@@ -407,12 +424,29 @@ extern "C" __declspec(naked) void hookCallback1()
         pushfd
         pushad
         lea eax, [esp + 36]
+        sub esp, 8
+        mov [esp], eax
+        mov edx, [esp + 8]
+        mov [esp + 4], edx
+        mov [esp + 8], eax
+        add esp, 8
+        popad
+        popfd
+        mov eax, [edi + 4]
+        push eax
+        call dword ptr [callbackOriginals + 4]
+        pushfd
+        pushad
+        mov eax, [esp]
         push eax
         call copyCallbackFrame
         add esp, 4
+        mov eax, [esp]
+        mov edx, [eax - 40]
+        mov [esp], edx
         popad
         popfd
-        jmp dword ptr [callbackOriginals + 4]
+        ret 4
     }
 }
 
