@@ -158,8 +158,7 @@ export function buildFfmpegArgs(config: GroupMediaManagerConfig, group: string):
     "-analyzeduration", "0", "-probesize", "32768", "-i", inputUrl,
     "-thread_queue_size", "1024", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
     "-map", "0:v:0", "-map", "1:a:0",
-    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-    "-pix_fmt", "yuv420p", "-profile:v", "baseline", "-x264-params", "repeat-headers=1",
+    "-c:v", "copy",
     "-c:a", "libopus", "-b:a", "160k", "-application", "lowdelay", "-frame_duration", "10", "-af", "aresample=async=1:first_pts=0",
     "-max_interleave_delta", "1000000", "-muxdelay", "0", "-f", "rtsp", "-rtsp_transport", "tcp", outputUrl
   ];
