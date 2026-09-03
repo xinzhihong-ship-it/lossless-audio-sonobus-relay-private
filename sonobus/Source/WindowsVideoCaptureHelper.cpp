@@ -488,6 +488,8 @@ const wchar_t* ffmpegPixelFormat(uint32_t pixelFormat)
     }
 }
 
+ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments);
+
 ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstring>& outputArguments,
                          uint32_t width, uint32_t height, double fps, uint32_t maxHeight,
                          double maxFps, uint32_t maxBitrate, uint32_t pixelFormat)
