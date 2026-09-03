@@ -432,6 +432,22 @@ void appendVideoProbe(const void* videoData) noexcept
                 used += wsprintfA(line + used, " image=%p imagefields=", image);
                 for (int index = 0; index < 0x20 && used + 4 < static_cast<int>(std::size(line)); ++index)
                     used += wsprintfA(line + used, "%02X", image[index]);
+
+                DWORD candidateWidth = 0;
+                DWORD candidateHeight = 0;
+                DWORD candidateBytes = 0;
+                DWORD candidateData = 0;
+                const bool candidateFields = readWord(image, 0x04, candidateWidth)
+                                           && readWord(image, 0x08, candidateHeight)
+                                           && readWord(image, 0x10, candidateBytes)
+                                           && readWord(image, 0x14, candidateData);
+                RawFrame candidateFrame;
+                const bool candidate = candidateFields
+                    && classifyRawFrame(reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(candidateData)),
+                                        candidateBytes, candidateWidth, candidateHeight, candidateFrame);
+                used += wsprintfA(line + used, " candidate=%d header=%p w=%lu h=%lu bytes=%lu data=%p",
+                                  candidate ? 1 : 0, frameHeader, candidateWidth, candidateHeight,
+                                  candidateBytes, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(candidateData)));
             }
         }
         line[used++] = '\r';
