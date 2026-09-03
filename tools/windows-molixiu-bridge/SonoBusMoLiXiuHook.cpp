@@ -295,8 +295,10 @@ bool tryMoLiXiuImageBlock(const unsigned char* object, DWORD& width, DWORD& heig
     const auto* image = reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(imageBlock));
     DWORD bytes = 0;
     DWORD data = 0;
+    // MoLiXiu embeds Qt 4 QImage. Its QImageData::bits() pointer is at +0x18;
+    // +0x14 is not pixel data.
     if (! readWord(image, 0x04, width) || ! readWord(image, 0x08, height)
-        || ! readWord(image, 0x10, bytes) || ! readWord(image, 0x14, data))
+        || ! readWord(image, 0x10, bytes) || ! readWord(image, 0x18, data))
         return false;
     return classifyRawFrame(reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(data)),
                             bytes, width, height, output);
@@ -440,7 +442,7 @@ void appendVideoProbe(const void* videoData) noexcept
                 const bool candidateFields = readWord(image, 0x04, candidateWidth)
                                            && readWord(image, 0x08, candidateHeight)
                                            && readWord(image, 0x10, candidateBytes)
-                                           && readWord(image, 0x14, candidateData);
+                                           && readWord(image, 0x18, candidateData);
                 RawFrame candidateFrame;
                 const bool candidate = candidateFields
                     && classifyRawFrame(reinterpret_cast<const unsigned char*>(static_cast<std::uintptr_t>(candidateData)),
