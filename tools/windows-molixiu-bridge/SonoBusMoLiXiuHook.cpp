@@ -48,8 +48,6 @@ void* patchedCallbackVtable = nullptr;
 HANDLE frameMapping = nullptr;
 sonobus::molixiu::FrameHeader* frameHeader = nullptr;
 volatile LONG frameNumber = 0;
-volatile LONG latestFrameNumber = 0;
-void* latestVideoData = nullptr;
 
 void patchCallbackVtable(const void* vtable) noexcept;
 void patchCallbackFromWeak(const void* weakPointer) noexcept;
@@ -373,30 +371,10 @@ const void* resolveCallbackFrame(const void* stack) noexcept
     return nullptr;
 }
 
-void rememberCallbackFrame(const void* stack) noexcept
+void copyCallbackFrame(const void* stack) noexcept
 {
     const auto videoData = resolveCallbackFrame(stack);
-    if (videoData != nullptr)
-    {
-        InterlockedExchangePointer(&latestVideoData, const_cast<void*>(videoData));
-        InterlockedIncrement(&latestFrameNumber);
-    }
-}
-
-DWORD WINAPI frameCopyThread(void*)
-{
-    LONG copiedFrameNumber = 0;
-    for (;;)
-    {
-        const auto currentFrameNumber = InterlockedCompareExchange(&latestFrameNumber, 0, 0);
-        if (currentFrameNumber != copiedFrameNumber)
-        {
-            Sleep(2);
-            const auto videoData = InterlockedCompareExchangePointer(&latestVideoData, nullptr, nullptr);
-            if (videoData != nullptr && copyMoLiXiuFrame(videoData)) copiedFrameNumber = currentFrameNumber;
-        }
-        Sleep(3);
-    }
+    if (videoData != nullptr) copyMoLiXiuFrame(videoData);
 }
 
 bool createFrameMapping() noexcept
@@ -426,7 +404,7 @@ extern "C" __declspec(naked) void hookCallback0()
         pushad
         lea eax, [esp + 36]
         push eax
-        call rememberCallbackFrame
+        call copyCallbackFrame
         add esp, 4
         popad
         popfd
@@ -441,7 +419,7 @@ extern "C" __declspec(naked) void hookCallback1()
         pushad
         lea eax, [esp + 36]
         push eax
-        call rememberCallbackFrame
+        call copyCallbackFrame
         add esp, 4
         popad
         popfd
@@ -674,7 +652,7 @@ DWORD WINAPI bridgeThread(void*)
         if (cameraCore == nullptr) Sleep(100);
     }
     if (cameraCore == nullptr) return 0;
-    if (createFrameMapping()) CreateThread(nullptr, 0, frameCopyThread, nullptr, 0, nullptr);
+    createFrameMapping();
 
     const auto setCurrentDevice = GetProcAddress(cameraCore,
         "?setCurrentDevice@RealCamera@@QAEXABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
