@@ -42,7 +42,6 @@ void* startCaptureTrampoline = nullptr;
 void* startCaptureWindowTrampoline = nullptr;
 void* currentSolutionTrampoline = nullptr;
 void* isCaptureingTrampoline = nullptr;
-void* onVideoSourceTrampoline = nullptr;
 void* setDataCallbackTrampoline = nullptr;
 void* callbackOriginals[2] {};
 void* patchedCallbackVtable = nullptr;
@@ -566,25 +565,6 @@ extern "C" __declspec(naked) void hookIsCaptureing()
     }
 }
 
-extern "C" __declspec(naked) void hookOnVideoSource()
-{
-    __asm
-    {
-        pushfd
-        pushad
-        // onVideoSource receives MoLiXiu's composed/output frame. Do not use
-        // it as the camera source when it is not a live camera frame.
-        mov edx, [esp + 40]
-        mov edx, [edx]
-        push edx
-        call copyMoLiXiuFrame
-        add esp, 4
-        popad
-        popfd
-        jmp dword ptr [onVideoSourceTrampoline]
-    }
-}
-
 extern "C" __declspec(naked) void hookSetDataCallback()
 {
     __asm
@@ -673,8 +653,6 @@ DWORD WINAPI bridgeThread(void*)
         "?getCurrentSolution@RealCamera@@QAEHXZ");
     const auto isCaptureing = GetProcAddress(cameraCore,
         "?isCaptureing@RealCamera@@QAE_NXZ");
-    const auto onVideoSource = GetProcAddress(cameraCore,
-        "?onVideoSource@VideoDataProcess@@QAEXAAV?$shared_ptr@UVideoData@@@boost@@@Z");
     const auto setDataCallback = GetProcAddress(cameraCore,
         "?setDataCallback@RealCamera@@QAEXAAV?$weak_ptr@VSourceDataCallBack@@@boost@@@Z");
     const unsigned char setExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
@@ -694,9 +672,6 @@ DWORD WINAPI bridgeThread(void*)
                 kCurrentSolutionHookLength, currentSolutionExpected, &currentSolutionTrampoline);
     installHook(reinterpret_cast<void*>(isCaptureing), reinterpret_cast<void*>(&hookIsCaptureing),
                 kIsCaptureingHookLength, isCaptureingExpected, &isCaptureingTrampoline);
-    const unsigned char onVideoSourceExpected[] = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF };
-    installHook(reinterpret_cast<void*>(onVideoSource), reinterpret_cast<void*>(&hookOnVideoSource),
-                kOnVideoSourceHookLength, onVideoSourceExpected, &onVideoSourceTrampoline);
     const unsigned char setDataCallbackExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45 };
     installHook(reinterpret_cast<void*>(setDataCallback), reinterpret_cast<void*>(&hookSetDataCallback),
                 kSetDataCallbackHookLength, setDataCallbackExpected, &setDataCallbackTrampoline);
