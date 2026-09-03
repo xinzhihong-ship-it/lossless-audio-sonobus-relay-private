@@ -22,6 +22,8 @@ test("group muxer passes client H264 through and adds low-latency Opus on stable
   assert.doesNotMatch(joined, /libx264/);
   assert.match(joined, /-c:a libopus -b:a 160k -application lowdelay -frame_duration 10/);
   assert.match(joined, /-max_interleave_delta 1000000/);
+  assert.equal(args.filter((value) => value === "-rw_timeout").length, 2);
+  assert.equal(args.filter((value) => value === "10000000").length, 2);
   assert.doesNotMatch(joined, /use_wallclock_as_timestamps/);
   assert.match(joined, /rtsp:\/\/media-muxer:secret%3Awith%40chars@mediamtx:8554\/ingest\/SB_studio/);
   assert.match(joined, /rtsp:\/\/media-muxer:secret%3Awith%40chars@mediamtx:8554\/SB_studio$/);
