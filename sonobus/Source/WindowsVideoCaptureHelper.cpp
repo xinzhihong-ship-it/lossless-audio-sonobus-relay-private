@@ -831,23 +831,29 @@ struct SharedMoLiXiuFrame
     std::vector<uint8_t> pixels;
 };
 
+LONG readSharedSequence(const sonobus::molixiu::FrameHeader* mapped) noexcept
+{
+    if (mapped == nullptr) return 0;
+    __try
+    {
+        MemoryBarrier();
+        const auto sequence = *reinterpret_cast<const volatile LONG*>(&mapped->sequence);
+        MemoryBarrier();
+        return sequence;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
 bool readSharedMoLiXiuFrame(const sonobus::molixiu::FrameHeader* mapped, SharedMoLiXiuFrame& output)
 {
     if (mapped == nullptr) return false;
     // The helper maps this section read-only. InterlockedCompareExchange is a
     // read-modify-write operation and faults on that mapping even when the
     // compared value is unchanged.
-    LONG sequence = 0;
-    __try
-    {
-        MemoryBarrier();
-        sequence = *reinterpret_cast<const volatile LONG*>(&mapped->sequence);
-        MemoryBarrier();
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+    const auto sequence = readSharedSequence(mapped);
     if (sequence <= 0 || (sequence & 1) != 0) return false;
 
     sonobus::molixiu::FrameHeader header {};
@@ -868,17 +874,7 @@ bool readSharedMoLiXiuFrame(const sonobus::molixiu::FrameHeader* mapped, SharedM
     std::vector<uint8_t> frame(header.bytes);
     std::memcpy(frame.data(), reinterpret_cast<const uint8_t*>(mapped) + sizeof(header), header.bytes);
     MemoryBarrier();
-    LONG sequenceAfter = 0;
-    __try
-    {
-        MemoryBarrier();
-        sequenceAfter = *reinterpret_cast<const volatile LONG*>(&mapped->sequence);
-        MemoryBarrier();
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
+    const auto sequenceAfter = readSharedSequence(mapped);
     if (sequenceAfter != sequence || (sequenceAfter & 1) != 0) return false;
     output.header = header;
     output.header.sequence = static_cast<uint32_t>(sequenceAfter);
