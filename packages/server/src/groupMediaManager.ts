@@ -131,6 +131,7 @@ export class GroupMediaManager {
     });
     worker.ffmpeg = ffmpeg;
     worker.audioBackpressured = false;
+    ffmpeg.stdin!.on("error", () => { worker.audioBackpressured = false; });
     ffmpeg.stderr!.on("data", (chunk: Buffer) => {
       const line = lastLine(chunk.toString());
       worker.lastError = line;
@@ -165,16 +166,15 @@ export function buildFfmpegArgs(config: GroupMediaManagerConfig, group: string):
   return [
     "-hide_banner", "-loglevel", "warning", "-nostdin",
     "-rtsp_transport", "tcp", "-fflags", "nobuffer", "-flags", "low_delay",
-    // ponytail: 10s stale-input/output watchdog so a dead ingest (camera off) or closed
-    // output gets ffmpeg killed; the poll loop restarts it clean once the path is ready.
-    "-rw_timeout", "10000000",
+    // ponytail: 10s RTSP socket watchdog so a dead ingest (camera off) gets ffmpeg
+    // killed; the poll loop restarts it clean once the path is ready again.
+    "-timeout", "10000000",
     "-analyzeduration", "0", "-probesize", "32768", "-i", inputUrl,
     "-thread_queue_size", "1024", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
     "-map", "0:v:0", "-map", "1:a:0",
     "-c:v", "copy",
     "-c:a", "libopus", "-b:a", "160k", "-application", "lowdelay", "-frame_duration", "10", "-af", "aresample=async=1:first_pts=0",
-    "-max_interleave_delta", "1000000", "-muxdelay", "0", "-f", "rtsp", "-rtsp_transport", "tcp",
-    "-rw_timeout", "10000000", outputUrl
+    "-max_interleave_delta", "1000000", "-muxdelay", "0", "-f", "rtsp", "-rtsp_transport", "tcp", outputUrl
   ];
 }
 
