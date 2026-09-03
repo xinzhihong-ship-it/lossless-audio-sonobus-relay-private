@@ -48,6 +48,8 @@ void* patchedCallbackVtable = nullptr;
 HANDLE frameMapping = nullptr;
 sonobus::molixiu::FrameHeader* frameHeader = nullptr;
 volatile LONG frameNumber = 0;
+volatile LONG latestFrameNumber = 0;
+void* latestVideoData = nullptr;
 
 void patchCallbackVtable(const void* vtable) noexcept;
 void patchCallbackFromWeak(const void* weakPointer) noexcept;
@@ -342,27 +344,58 @@ bool copyMoLiXiuFrame(const void* videoData) noexcept
     }
 }
 
-void copyCallbackFrame(const void* stack) noexcept
+const void* resolveCallbackFrame(const void* stack) noexcept
 {
-    if (stack == nullptr) return;
+    if (stack == nullptr) return nullptr;
     __try
     {
         const auto* words = static_cast<const DWORD*>(stack);
         // SourceDataCallBack is an x86 __thiscall method: ECX is `this` and
         // the first real argument starts at the first stack word after ret.
         const auto firstArgument = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(words[1]));
-        if (firstArgument == nullptr) return;
-        if (copyMoLiXiuFrame(firstArgument)) return;
+        if (firstArgument == nullptr) return nullptr;
+        DWORD width = 0;
+        DWORD height = 0;
+        RawFrame source;
+        if (tryMoLiXiuImageBlock(static_cast<const unsigned char*>(firstArgument), width, height, source))
+            return firstArgument;
 
         // A boost::shared_ptr can be passed either by value (raw VideoData is the
         // first stack word) or by reference (the first word points to that raw
         // VideoData pointer). Accept both ABI forms without touching ownership.
         DWORD rawVideoData = 0;
         if (readWord(static_cast<const unsigned char*>(firstArgument), 0, rawVideoData))
-            copyMoLiXiuFrame(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(rawVideoData)));
+            return reinterpret_cast<const void*>(static_cast<std::uintptr_t>(rawVideoData));
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+    }
+    return nullptr;
+}
+
+void rememberCallbackFrame(const void* stack) noexcept
+{
+    const auto videoData = resolveCallbackFrame(stack);
+    if (videoData != nullptr)
+    {
+        InterlockedExchangePointer(&latestVideoData, const_cast<void*>(videoData));
+        InterlockedIncrement(&latestFrameNumber);
+    }
+}
+
+DWORD WINAPI frameCopyThread(void*)
+{
+    LONG copiedFrameNumber = 0;
+    for (;;)
+    {
+        const auto currentFrameNumber = InterlockedCompareExchange(&latestFrameNumber, 0, 0);
+        if (currentFrameNumber != copiedFrameNumber)
+        {
+            Sleep(2);
+            const auto videoData = InterlockedCompareExchangePointer(&latestVideoData, nullptr, nullptr);
+            if (videoData != nullptr && copyMoLiXiuFrame(videoData)) copiedFrameNumber = currentFrameNumber;
+        }
+        Sleep(3);
     }
 }
 
@@ -392,29 +425,12 @@ extern "C" __declspec(naked) void hookCallback0()
         pushfd
         pushad
         lea eax, [esp + 36]
-        sub esp, 8
-        mov [esp], eax
-        mov edx, [esp + 8]
-        mov [esp + 4], edx
-        mov [esp + 8], eax
-        add esp, 8
-        popad
-        popfd
-        mov eax, [edi + 4]
         push eax
-        call dword ptr [callbackOriginals + 0]
-        pushfd
-        pushad
-        mov eax, [esp]
-        push eax
-        call copyCallbackFrame
+        call rememberCallbackFrame
         add esp, 4
-        mov eax, [esp]
-        mov edx, [eax - 40]
-        mov [esp], edx
         popad
         popfd
-        ret 4
+        jmp dword ptr [callbackOriginals + 0]
     }
 }
 extern "C" __declspec(naked) void hookCallback1()
@@ -424,29 +440,12 @@ extern "C" __declspec(naked) void hookCallback1()
         pushfd
         pushad
         lea eax, [esp + 36]
-        sub esp, 8
-        mov [esp], eax
-        mov edx, [esp + 8]
-        mov [esp + 4], edx
-        mov [esp + 8], eax
-        add esp, 8
-        popad
-        popfd
-        mov eax, [edi + 4]
         push eax
-        call dword ptr [callbackOriginals + 4]
-        pushfd
-        pushad
-        mov eax, [esp]
-        push eax
-        call copyCallbackFrame
+        call rememberCallbackFrame
         add esp, 4
-        mov eax, [esp]
-        mov edx, [eax - 40]
-        mov [esp], edx
         popad
         popfd
-        ret 4
+        jmp dword ptr [callbackOriginals + 4]
     }
 }
 
@@ -675,7 +674,7 @@ DWORD WINAPI bridgeThread(void*)
         if (cameraCore == nullptr) Sleep(100);
     }
     if (cameraCore == nullptr) return 0;
-    createFrameMapping();
+    if (createFrameMapping()) CreateThread(nullptr, 0, frameCopyThread, nullptr, 0, nullptr);
 
     const auto setCurrentDevice = GetProcAddress(cameraCore,
         "?setCurrentDevice@RealCamera@@QAEXABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
