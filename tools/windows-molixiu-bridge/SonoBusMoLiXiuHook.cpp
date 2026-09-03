@@ -691,13 +691,12 @@ DWORD WINAPI bridgeThread(void*)
     const unsigned char setExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
     const unsigned char startExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 };
     const unsigned char windowExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
-    if (! installHook(reinterpret_cast<void*>(setCurrentDevice), reinterpret_cast<void*>(&hookSetCurrentDevice),
-                      kSetCurrentDeviceHookLength, setExpected, &setCurrentDeviceTrampoline)
-        || ! installHook(reinterpret_cast<void*>(startCapture), reinterpret_cast<void*>(&hookStartCapture),
-                         kStartCaptureHookLength, startExpected, &startCaptureTrampoline)
-        || ! installHook(reinterpret_cast<void*>(startCaptureWindow), reinterpret_cast<void*>(&hookStartCaptureWindow),
-                         kStartCaptureWindowHookLength, windowExpected, &startCaptureWindowTrampoline))
-        return 0;
+    installHook(reinterpret_cast<void*>(setCurrentDevice), reinterpret_cast<void*>(&hookSetCurrentDevice),
+                kSetCurrentDeviceHookLength, setExpected, &setCurrentDeviceTrampoline);
+    installHook(reinterpret_cast<void*>(startCapture), reinterpret_cast<void*>(&hookStartCapture),
+                kStartCaptureHookLength, startExpected, &startCaptureTrampoline);
+    installHook(reinterpret_cast<void*>(startCaptureWindow), reinterpret_cast<void*>(&hookStartCaptureWindow),
+                kStartCaptureWindowHookLength, windowExpected, &startCaptureWindowTrampoline);
 
     const unsigned char currentSolutionExpected[] = { 0x8B, 0x09, 0x8B, 0x41, 0x08 };
     const unsigned char isCaptureingExpected[] = { 0x8B, 0x01, 0x83, 0x78, 0x18, 0x00 };
