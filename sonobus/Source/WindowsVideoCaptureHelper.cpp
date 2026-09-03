@@ -554,7 +554,7 @@ ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstr
 
     std::vector<wchar_t> writable(command.begin(), command.end());
     writable.push_back(0);
-    if (!CreateProcessW(nullptr, writable.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child.process))
+    if (!CreateProcessW(ffmpeg.c_str(), writable.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child.process))
     {
         const auto error = GetLastError();
         CloseHandle(inputRead);
