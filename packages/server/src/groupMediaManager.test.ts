@@ -47,13 +47,21 @@ class FakeChild extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   readonly signals: NodeJS.Signals[] = [];
 
+  constructor(private readonly closeAfterKill = true) {
+    super();
+  }
+
   kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
     this.signals.push(signal);
     if (signal === "SIGKILL") {
       this.signalCode = signal;
-      queueMicrotask(() => this.emit("close", null, signal));
+      if (this.closeAfterKill) queueMicrotask(() => this.emit("close", null, signal));
     }
     return true;
+  }
+
+  finishClose(): void {
+    this.emit("close", this.exitCode, this.signalCode);
   }
 }
 
@@ -89,5 +97,40 @@ test("group manager does not overlap a replacement while a stopped muxer is stil
   assert.deepEqual(children.slice(0, 2).map((child) => child.signals), [["SIGTERM", "SIGKILL"], ["SIGTERM", "SIGKILL"]]);
   assert.deepEqual(manager.status(), [{ group: "studio", audioBridge: true, muxer: true, error: undefined }]);
 
+  await manager.close();
+});
+
+test("synchronous bridge spawn failure does not leave a phantom worker", async () => {
+  const spawnProcess: GroupMediaProcessSpawner = (() => {
+    throw new Error("synthetic spawn failure");
+  }) as GroupMediaProcessSpawner;
+  const manager = new GroupMediaManager(config, { paths: async () => [] }, { spawnProcess });
+
+  manager.reconcile([{ group: "studio", groupPassword: "old" }]);
+  assert.deepEqual(manager.status(), []);
+  await manager.close();
+});
+
+test("group manager waits for close after a child reports its signal", async () => {
+  const children: FakeChild[] = [];
+  const spawnProcess: GroupMediaProcessSpawner = (() => {
+    const child = new FakeChild(children.length >= 2);
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as GroupMediaProcessSpawner;
+  const mediaMtx = { paths: async () => [{ name: "ingest/SB_studio", ready: true }] };
+  const manager = new GroupMediaManager(config, mediaMtx, { spawnProcess, stopGraceMs: 0 });
+
+  manager.reconcile([{ group: "studio", groupPassword: "old" }]);
+  await waitForChildren(children, 2);
+  manager.reconcile([{ group: "studio", groupPassword: "new" }]);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(children.slice(0, 2).map((child) => child.signals), [["SIGTERM", "SIGKILL"], ["SIGTERM", "SIGKILL"]]);
+  assert.equal(children.length, 2, "signalCode must not count as close");
+
+  children[0].finishClose();
+  children[1].finishClose();
+  await waitForChildren(children, 4);
+  assert.equal(children.length, 4);
   await manager.close();
 });

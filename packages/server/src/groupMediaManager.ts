@@ -41,6 +41,7 @@ export class GroupMediaManager {
   private readonly workers = new Map<string, Worker>();
   private readonly stoppingProcesses = new Map<string, Set<ChildProcess>>();
   private readonly stoppingWaiters = new Set<() => void>();
+  private readonly retryTimers = new Map<string, NodeJS.Timeout>();
   private readonly desiredGroups = new Map<string, ActiveVideoGroup>();
   private readonly pollTimer: NodeJS.Timeout;
   private readonly spawnProcess: GroupMediaProcessSpawner;
@@ -63,6 +64,12 @@ export class GroupMediaManager {
   reconcile(groups: ActiveVideoGroup[]): void {
     if (this.stopped) return;
     const wanted = new Map(groups.map((group) => [group.group, group]));
+    for (const [group, timer] of this.retryTimers) {
+      if (!wanted.has(group)) {
+        clearTimeout(timer);
+        this.retryTimers.delete(group);
+      }
+    }
     this.desiredGroups.clear();
     for (const group of wanted.values()) this.desiredGroups.set(group.group, group);
     for (const [name, worker] of this.workers) {
@@ -89,6 +96,8 @@ export class GroupMediaManager {
     if (this.stopped) return;
     this.stopped = true;
     this.desiredGroups.clear();
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
     clearInterval(this.pollTimer);
     for (const worker of this.workers.values()) this.stopWorker(worker);
     this.workers.clear();
@@ -102,16 +111,25 @@ export class GroupMediaManager {
       };
       this.stoppingWaiters.add(resolveWaiter);
     });
-    const timeout = setTimeout(resolveWaiter, Math.max(5000, this.stopGraceMs + 250));
     await stopped;
-    clearTimeout(timeout);
   }
 
   private maybeStartWorker(group: ActiveVideoGroup): void {
-    if (this.stopped || this.workers.has(group.group) || this.stoppingProcesses.has(group.group)) return;
+    if (this.stopped || this.workers.has(group.group) || this.stoppingProcesses.has(group.group)
+        || this.retryTimers.has(group.group)) return;
     const worker: Worker = { ...group, audioBackpressured: false, stopping: false };
     this.workers.set(group.group, worker);
-    this.startBridge(worker);
+    try {
+      this.startBridge(worker);
+    } catch (error) {
+      this.workers.delete(group.group);
+      worker.stopping = true;
+      const bridge = worker.bridge;
+      worker.bridge = undefined;
+      if (bridge) this.stopProcesses(group.group, [bridge]);
+      else this.scheduleWorkerRetry(group.group);
+      console.warn(`[groupMedia:${group.group}] bridge start failed: ${errorMessage(error)}`);
+    }
   }
 
   private startBridge(worker: Worker): void {
@@ -234,6 +252,7 @@ export class GroupMediaManager {
         }
       };
       child.once("close", finish);
+      destroyChildStreams(child);
       if (processHasExited(child)) continue;
       let signaled = false;
       try {
@@ -250,7 +269,6 @@ export class GroupMediaManager {
             try { child.kill("SIGKILL"); } catch { /* best effort */ }
           }
         }, this.stopGraceMs);
-        forceTimer.unref();
       }
     }
   }
@@ -261,10 +279,31 @@ export class GroupMediaManager {
     this.maybeStartWorker(desired);
     void this.poll();
   }
+
+  private scheduleWorkerRetry(group: string): void {
+    if (this.stopped || this.retryTimers.has(group)) return;
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(group);
+      const desired = this.desiredGroups.get(group);
+      if (desired) this.maybeStartWorker(desired);
+    }, 1000);
+    timer.unref();
+    this.retryTimers.set(group, timer);
+  }
 }
 
 function processHasExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
+}
+
+function destroyChildStreams(child: ChildProcess): void {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function buildFfmpegArgs(config: GroupMediaManagerConfig, group: string): string[] {
