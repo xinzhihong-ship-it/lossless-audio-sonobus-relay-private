@@ -50,6 +50,7 @@ Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-LICENSE"; DestDir: "{app}"
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg32-LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-README.txt"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\ffmpeg-RUNTIME.md"; DestDir: "{app}"; Components: app; Flags: ignoreversion
+Source: "{#SourceRoot}\installer-input\SonoBus\build-manifest.json"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBus.vst3\*"; DestDir: "{commoncf}\VST3\SonoBus.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\installer-input\SonoBus\SonoBusInstrument.vst3\*"; DestDir: "{commoncf}\VST3\SonoBusInstrument.vst3"; Components: vst3; Flags: ignoreversion recursesubdirs createallsubdirs
 // VST3 plugins look for the capture helper and ffmpeg next to the plugin binary (the DLL

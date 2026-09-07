@@ -11,6 +11,7 @@ $pluginDirs = @(
   (Join-Path $vst3Root "SonoBus.vst3"),
   (Join-Path $vst3Root "SonoBusInstrument.vst3")
 )
+$payloadRoot = Join-Path (Get-Location).Path "installer-input\SonoBus"
 $uninstaller = $null
 $verifyUninstall = $false
 
@@ -50,6 +51,7 @@ try {
     (Join-Path $appDir "ffmpeg32-LICENSE"),
     (Join-Path $appDir "ffmpeg-README.txt"),
     (Join-Path $appDir "ffmpeg-RUNTIME.md"),
+    (Join-Path $appDir "build-manifest.json"),
     (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBus.vst3"),
     (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusInstrument.vst3")
   ) + $runtimes + $helpers + $molixiuBridge
@@ -68,6 +70,53 @@ try {
   foreach ($runtime in $runtimes | Where-Object { $_ -like "*ffmpeg32.exe" }) {
     if ((Get-FileHash -Algorithm SHA256 $runtime).Hash -ne $sourceHash32) {
       throw "Installed 32-bit FFmpeg checksum mismatch: $runtime"
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container)) {
+    throw "Installer source payload is missing: $payloadRoot"
+  }
+  $payloadManifestPath = Join-Path $payloadRoot "build-manifest.json"
+  if (-not (Test-Path -LiteralPath $payloadManifestPath -PathType Leaf)) {
+    throw "Installer source manifest is missing: $payloadManifestPath"
+  }
+  $payloadManifest = Get-Content -LiteralPath $payloadManifestPath -Raw | ConvertFrom-Json
+  if ($payloadManifest.schemaVersion -ne 1) { throw "Unsupported build manifest schema." }
+  $hashChecks = @(
+    @{ RelativePath = "build-manifest.json"; Destinations = @((Join-Path $appDir "build-manifest.json")) },
+    @{ RelativePath = "SonoBusVideoCaptureHelper.exe"; Destinations = @(
+      (Join-Path $appDir "SonoBusVideoCaptureHelper.exe"),
+      (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusVideoCaptureHelper.exe"),
+      (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusVideoCaptureHelper.exe")
+    ) },
+    @{ RelativePath = "SonoBusMoLiXiuBridge.exe"; Destinations = @(
+      (Join-Path $appDir "SonoBusMoLiXiuBridge.exe"),
+      (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusMoLiXiuBridge.exe"),
+      (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusMoLiXiuBridge.exe")
+    ) },
+    @{ RelativePath = "SonoBusMoLiXiuHook.dll"; Destinations = @(
+      (Join-Path $appDir "SonoBusMoLiXiuHook.dll"),
+      (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusMoLiXiuHook.dll"),
+      (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusMoLiXiuHook.dll")
+    ) },
+    @{ RelativePath = "SonoBus.vst3/Contents/x86_64-win/SonoBus.vst3"; Destinations = @(
+      (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBus.vst3")
+    ) },
+    @{ RelativePath = "SonoBusInstrument.vst3/Contents/x86_64-win/SonoBusInstrument.vst3"; Destinations = @(
+      (Join-Path $pluginDirs[1] "Contents/x86_64-win/SonoBusInstrument.vst3")
+    ) }
+  )
+  foreach ($check in $hashChecks) {
+    $source = Join-Path $payloadRoot ($check.RelativePath -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Manifest source is missing: $source" }
+    $manifestEntry = $payloadManifest.files.PSObject.Properties[$check.RelativePath]
+    if ($null -eq $manifestEntry) { throw "Manifest omitted: $($check.RelativePath)" }
+    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([string]$manifestEntry.Value -ne $sourceHash) { throw "Source manifest checksum mismatch: $($check.RelativePath)" }
+    foreach ($destination in $check.Destinations) {
+      if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) { throw "Installer omitted: $destination" }
+      $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($destinationHash -ne $sourceHash) { throw "Installed payload checksum mismatch: $destination" }
     }
   }
 

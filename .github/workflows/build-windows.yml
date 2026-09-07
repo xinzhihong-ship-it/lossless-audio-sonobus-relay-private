@@ -26,6 +26,8 @@ jobs:
   build-windows:
     name: Windows x64 Release
     runs-on: windows-2022
+    env:
+      SBVERSION: "0.1.32"
 
     steps:
       - name: Checkout
@@ -182,13 +184,17 @@ jobs:
           Copy-Item -Force sonobus/LICENSE artifacts/windows-x64/sonobus-LICENSE
           Copy-Item -Force sonobus/LICENSE_EXCEPTION artifacts/windows-x64/sonobus-LICENSE_EXCEPTION
 
+      - name: Write payload build manifest
+        shell: pwsh
+        run: tools/windows-installer/write-build-manifest.ps1 -PayloadRoot artifacts/windows-x64 -Version $env:SBVERSION
+
       - name: Build installer
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path installer-input/SonoBus | Out-Null
           Copy-Item -Recurse -Force artifacts/windows-x64/* installer-input/SonoBus/
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            /DSBVERSION="0.1.26" `
+            /DSBVERSION="$env:SBVERSION" `
             /DSBASIOSUFFIX="" `
             tools/windows-installer/sonobus-installer.iss
 
