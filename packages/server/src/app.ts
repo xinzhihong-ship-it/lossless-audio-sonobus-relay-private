@@ -147,11 +147,15 @@ export async function createApp(config: ServerConfig): Promise<App> {
     server,
     store,
     async close() {
+      // Stop accepting new control requests before waiting for child-process cleanup.
+      const serverClosed = server.listening
+        ? new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+        : Promise.resolve();
       await groupMedia?.close();
       await videoControl.close();
       wss.close();
       bridgePoller?.stop();
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      await serverClosed;
       await udpRelay?.stop();
       await store.close();
     }
