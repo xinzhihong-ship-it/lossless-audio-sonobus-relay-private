@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { ingestVideoPath, type MediaMtxAdmin, videoRoom } from "./mediaMtx.js";
 
 export type ActiveVideoGroup = { group: string; groupPassword: string };
@@ -17,21 +17,45 @@ export type GroupMediaManagerConfig = {
   muxerPassword: string;
 };
 
+export type GroupMediaProcessSpawner = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions
+) => ChildProcess;
+
+export type GroupMediaManagerOptions = {
+  spawnProcess?: GroupMediaProcessSpawner;
+  stopGraceMs?: number;
+};
+
 type Worker = ActiveVideoGroup & {
   bridge?: ChildProcess;
   ffmpeg?: ChildProcess;
   audioBackpressured: boolean;
+  stopping: boolean;
   lastError?: string;
   lastWarnAt?: number;
 };
 
 export class GroupMediaManager {
   private readonly workers = new Map<string, Worker>();
+  private readonly stoppingProcesses = new Map<string, Set<ChildProcess>>();
+  private readonly stoppingWaiters = new Set<() => void>();
+  private readonly desiredGroups = new Map<string, ActiveVideoGroup>();
   private readonly pollTimer: NodeJS.Timeout;
+  private readonly spawnProcess: GroupMediaProcessSpawner;
+  private readonly stopGraceMs: number;
   private polling = false;
   private stopped = false;
 
-  constructor(private readonly config: GroupMediaManagerConfig, private readonly mediaMtx: MediaMtxAdmin) {
+  constructor(
+    private readonly config: GroupMediaManagerConfig,
+    private readonly mediaMtx: MediaMtxAdmin,
+    options: GroupMediaManagerOptions = {}
+  ) {
+    this.spawnProcess = options.spawnProcess ?? spawn;
+    const stopGraceMs = options.stopGraceMs ?? 1000;
+    this.stopGraceMs = Number.isFinite(stopGraceMs) ? Math.max(0, stopGraceMs) : 1000;
     this.pollTimer = setInterval(() => void this.poll(), 500);
     this.pollTimer.unref();
   }
@@ -39,19 +63,16 @@ export class GroupMediaManager {
   reconcile(groups: ActiveVideoGroup[]): void {
     if (this.stopped) return;
     const wanted = new Map(groups.map((group) => [group.group, group]));
+    this.desiredGroups.clear();
+    for (const group of wanted.values()) this.desiredGroups.set(group.group, group);
     for (const [name, worker] of this.workers) {
       const next = wanted.get(name);
       if (!next || next.groupPassword !== worker.groupPassword) {
-        this.stopWorker(worker);
         this.workers.delete(name);
+        this.stopWorker(worker);
       }
     }
-    for (const group of wanted.values()) {
-      if (this.workers.has(group.group)) continue;
-      const worker: Worker = { ...group, audioBackpressured: false };
-      this.workers.set(group.group, worker);
-      this.startBridge(worker);
-    }
+    for (const group of wanted.values()) this.maybeStartWorker(group);
     void this.poll();
   }
 
@@ -64,17 +85,39 @@ export class GroupMediaManager {
     }));
   }
 
-  close(): void {
+  async close(): Promise<void> {
+    if (this.stopped) return;
     this.stopped = true;
+    this.desiredGroups.clear();
     clearInterval(this.pollTimer);
     for (const worker of this.workers.values()) this.stopWorker(worker);
     this.workers.clear();
+
+    if (!this.stoppingProcesses.size) return;
+    let resolveWaiter!: () => void;
+    const stopped = new Promise<void>((resolve) => {
+      resolveWaiter = () => {
+        this.stoppingWaiters.delete(resolveWaiter);
+        resolve();
+      };
+      this.stoppingWaiters.add(resolveWaiter);
+    });
+    const timeout = setTimeout(resolveWaiter, Math.max(5000, this.stopGraceMs + 250));
+    await stopped;
+    clearTimeout(timeout);
+  }
+
+  private maybeStartWorker(group: ActiveVideoGroup): void {
+    if (this.stopped || this.workers.has(group.group) || this.stoppingProcesses.has(group.group)) return;
+    const worker: Worker = { ...group, audioBackpressured: false, stopping: false };
+    this.workers.set(group.group, worker);
+    this.startBridge(worker);
   }
 
   private startBridge(worker: Worker): void {
-    if (this.stopped || this.workers.get(worker.group) !== worker) return;
+    if (this.stopped || worker.stopping || this.workers.get(worker.group) !== worker) return;
     const username = `media-mix-${createHash("sha256").update(worker.group).digest("hex").slice(0, 12)}`;
-    const bridge = spawn(this.config.bridgeBinary, [], {
+    const bridge = this.spawnProcess(this.config.bridgeBinary, [], {
       env: {
         ...process.env,
         BRIDGE_CONNECTION_HOST: this.config.connectionHost,
@@ -100,7 +143,7 @@ export class GroupMediaManager {
     bridge.on("error", (error) => { worker.lastError = error.message; });
     bridge.on("close", () => {
       if (worker.bridge === bridge) worker.bridge = undefined;
-      if (!this.stopped && this.workers.get(worker.group) === worker) {
+      if (!worker.stopping && !this.stopped && this.workers.get(worker.group) === worker) {
         setTimeout(() => this.startBridge(worker), 1000).unref();
       }
     });
@@ -113,7 +156,7 @@ export class GroupMediaManager {
       const ready = new Set((await this.mediaMtx.paths()).filter((path) => path.ready).map((path) => path.name));
       for (const worker of this.workers.values()) {
         const ingestPath = ingestVideoPath(worker.group);
-        if (ingestPath && ready.has(ingestPath) && !worker.ffmpeg) this.startFfmpeg(worker);
+        if (ingestPath && ready.has(ingestPath) && !worker.stopping && !worker.ffmpeg) this.startFfmpeg(worker);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -124,8 +167,8 @@ export class GroupMediaManager {
   }
 
   private startFfmpeg(worker: Worker): void {
-    if (this.stopped || this.workers.get(worker.group) !== worker || worker.ffmpeg) return;
-    const ffmpeg = spawn(this.config.ffmpegBinary, buildFfmpegArgs(this.config, worker.group), {
+    if (this.stopped || worker.stopping || this.workers.get(worker.group) !== worker || worker.ffmpeg) return;
+    const ffmpeg = this.spawnProcess(this.config.ffmpegBinary, buildFfmpegArgs(this.config, worker.group), {
       env: process.env,
       stdio: ["pipe", "ignore", "pipe"]
     });
@@ -150,11 +193,78 @@ export class GroupMediaManager {
   }
 
   private stopWorker(worker: Worker): void {
-    worker.ffmpeg?.kill("SIGTERM");
-    worker.bridge?.kill("SIGTERM");
+    worker.stopping = true;
+    const children = [worker.ffmpeg, worker.bridge].filter((child): child is ChildProcess => child !== undefined);
     worker.ffmpeg = undefined;
     worker.bridge = undefined;
+    worker.audioBackpressured = false;
+    this.stopProcesses(worker.group, children);
   }
+
+  private stopProcesses(group: string, children: ChildProcess[]): void {
+    // FFmpeg can stay blocked in an RTSP read or pipe write after SIGTERM. Keep a
+    // per-group stopping barrier until every child emits close, then escalate once.
+    if (!children.length) {
+      this.maybeStartDesiredWorker(group);
+      return;
+    }
+
+    let stopping = this.stoppingProcesses.get(group);
+    if (!stopping) {
+      stopping = new Set<ChildProcess>();
+      this.stoppingProcesses.set(group, stopping);
+    }
+    for (const child of children) stopping.add(child);
+
+    for (const child of children) {
+      let forceTimer: NodeJS.Timeout | undefined;
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (forceTimer) clearTimeout(forceTimer);
+        stopping!.delete(child);
+        if (!stopping!.size) {
+          this.stoppingProcesses.delete(group);
+          this.maybeStartDesiredWorker(group);
+          if (!this.stoppingProcesses.size) {
+            const waiters = [...this.stoppingWaiters];
+            for (const resolve of waiters) resolve();
+          }
+        }
+      };
+      child.once("close", finish);
+      if (processHasExited(child)) continue;
+      let signaled = false;
+      try {
+        signaled = child.kill("SIGTERM");
+      } catch {
+        // The process may have exited between the state check and kill().
+      }
+      if (!signaled && !processHasExited(child)) {
+        try { child.kill("SIGKILL"); } catch { /* best effort */ }
+      }
+      if (!finished) {
+        forceTimer = setTimeout(() => {
+          if (!processHasExited(child)) {
+            try { child.kill("SIGKILL"); } catch { /* best effort */ }
+          }
+        }, this.stopGraceMs);
+        forceTimer.unref();
+      }
+    }
+  }
+
+  private maybeStartDesiredWorker(group: string): void {
+    const desired = this.desiredGroups.get(group);
+    if (!desired) return;
+    this.maybeStartWorker(desired);
+    void this.poll();
+  }
+}
+
+function processHasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 export function buildFfmpegArgs(config: GroupMediaManagerConfig, group: string): string[] {

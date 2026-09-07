@@ -450,12 +450,14 @@ std::wstring outputFilter(Mode capture, Mode output)
 }
 
 std::vector<std::wstring> expandOutputArguments(const std::vector<std::wstring>& input, Mode capture,
-                                                uint32_t maxHeight, double maxFps, uint32_t maxBitrate)
+                                                uint32_t maxHeight, double maxFps, uint32_t maxBitrate,
+                                                bool verticalFlip)
 {
     const auto output = outputModeFor(capture, maxHeight, maxFps);
     const auto automatic = automaticBitrate(output.width, output.height);
     const auto bitrate = maxBitrate > 0 ? std::min(maxBitrate, automatic) : automatic;
-    const auto filter = outputFilter(capture, output);
+    auto filter = outputFilter(capture, output);
+    if (verticalFlip) filter = filter.empty() ? L"vflip" : L"vflip," + filter;
     const auto gop = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(output.fps)));
     std::vector<std::wstring> result;
     for (const auto& argument : input)
@@ -492,13 +494,15 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments);
 
 ChildProcess startFfmpeg(const std::wstring& ffmpeg, const std::vector<std::wstring>& outputArguments,
                          uint32_t width, uint32_t height, double fps, uint32_t maxHeight,
-                         double maxFps, uint32_t maxBitrate, uint32_t pixelFormat)
+                         double maxFps, uint32_t maxBitrate, uint32_t pixelFormat,
+                         bool verticalFlip = false)
 {
     const auto inputPixelFormat = ffmpegPixelFormat(pixelFormat);
     if (inputPixelFormat == nullptr)
         throw hresult_error(MF_E_INVALIDMEDIATYPE, L"Unsupported shared video pixel format.");
     const auto capture = Mode { width, height, fps, nullptr };
-    const auto expandedArguments = expandOutputArguments(outputArguments, capture, maxHeight, maxFps, maxBitrate);
+    const auto expandedArguments = expandOutputArguments(outputArguments, capture, maxHeight, maxFps, maxBitrate,
+                                                          verticalFlip);
 
     std::vector<std::wstring> arguments {
         ffmpeg, L"-hide_banner", L"-loglevel", L"warning", L"-nostdin",
@@ -1026,10 +1030,12 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
         return child.process.hProcess != nullptr && childWidth == width && childHeight == height
             && childFps == fps && childPixel == pixelFormat;
     };
-    const auto restartChild = [&](uint32_t width, uint32_t height, double fps, uint32_t pixelFormat)
+    const auto restartChild = [&](uint32_t width, uint32_t height, double fps, uint32_t pixelFormat,
+                                  bool verticalFlip)
     {
         child = ChildProcess {};
-        child = startFfmpeg(ffmpeg, outputArguments, width, height, fps, maxHeight, maxFps, maxBitrate, pixelFormat);
+        child = startFfmpeg(ffmpeg, outputArguments, width, height, fps, maxHeight, maxFps, maxBitrate,
+                            pixelFormat, verticalFlip);
         childWidth = width;
         childHeight = height;
         childFps = fps;
@@ -1112,7 +1118,9 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             {
                 try
                 {
-                    restartChild(next.header.width, next.header.height, fpsValue, next.header.pixelFormat);
+                    // MoLiXiu's callback bitmap is bottom-up relative to the preview; normalize it
+                    // before publishing while leaving ordinary physical-camera capture untouched.
+                    restartChild(next.header.width, next.header.height, fpsValue, next.header.pixelFormat, true);
                     std::cout << "capture_mode=molixiu-hook\n"
                               << "capture_width=" << next.header.width << "\ncapture_height=" << next.header.height
                               << "\ncapture_nominal_fps=" << fpsValue << '\n' << std::flush;
@@ -1144,7 +1152,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                         auto session = openSharedCamera(groupId);
                         startReaderForSource(session, 0);
                         restartChild(session.mode.width, session.mode.height, session.mode.fps,
-                                     sonobus::molixiu::kPixelNv12);
+                                     sonobus::molixiu::kPixelNv12, false);
                         direct = std::move(session);
                         fallback = Fallback::SharedReader;
                         directSequence = 0;

@@ -116,6 +116,43 @@ test("paired client polls persisted admin state and receives scoped MediaMTX dig
   }
 });
 
+test("video state changes serialize media reconciliation notifications", async () => {
+  const store = new MemoryStore();
+  await store.createVideoPairing({
+    pairingId: "pairing-queue",
+    group: "studio",
+    user: "alice",
+    pairingKeyCiphertext: ""
+  });
+  const service = new VideoControlService(store, "test-encryption-secret");
+  const events: string[] = [];
+  let releaseFirst!: () => void;
+  let firstStarted!: () => void;
+  const firstHandlerStarted = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const firstHandlerRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  service.setStateChangeHandler(async () => {
+    events.push("start");
+    if (events.length === 1) {
+      firstStarted();
+      await firstHandlerRelease;
+    }
+    events.push("end");
+  });
+
+  try {
+    const first = service.setDesired({ group: "studio", user: "alice", enabled: true, cameraDeviceId: "camera-a" });
+    await firstHandlerStarted;
+    const second = service.setDesired({ group: "studio", user: "alice", enabled: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, ["start"], "a second state change must wait for the first reconciliation");
+    releaseFirst();
+    await Promise.all([first, second]);
+    assert.deepEqual(events, ["start", "end", "start", "end"]);
+  } finally {
+    await service.close();
+  }
+});
+
 test("authenticated SonoBus client enrolls without a visible pairing code", async () => {
   const store = new MemoryStore();
   const service = new VideoControlService(store, "test-encryption-secret");

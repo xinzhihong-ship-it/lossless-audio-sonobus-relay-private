@@ -94,6 +94,7 @@ export class VideoControlService {
   private stateChangeHandler?: () => void | Promise<void>;
   private pruning = false;
   private authSync: Promise<void> = Promise.resolve();
+  private stateChangeQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly store: Store,
@@ -367,6 +368,7 @@ export class VideoControlService {
     this.sessions.clear();
     this.usedNonces.clear();
     this.pendingEnrollments.clear();
+    await this.stateChangeQueue.catch(() => undefined);
     await this.syncMediaMtxAuth();
   }
 
@@ -428,7 +430,13 @@ export class VideoControlService {
 
 
   private async notifyStateChange(): Promise<void> {
-    await this.stateChangeHandler?.();
+    // Reconciliation reads current state asynchronously; serialize notifications so
+    // an older snapshot cannot finish after a newer camera-control change.
+    const next = this.stateChangeQueue
+      .catch(() => undefined)
+      .then(() => this.stateChangeHandler?.());
+    this.stateChangeQueue = next;
+    await next;
   }
 }
 

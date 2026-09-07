@@ -147,7 +147,7 @@ export async function createApp(config: ServerConfig): Promise<App> {
     server,
     store,
     async close() {
-      groupMedia?.close();
+      await groupMedia?.close();
       await videoControl.close();
       wss.close();
       bridgePoller?.stop();
