@@ -26,6 +26,48 @@ inline bool containsInsensitive(std::wstring_view value, std::wstring_view token
     return false;
 }
 
+inline bool equalsInsensitive(std::wstring_view left, std::wstring_view right) noexcept
+{
+    if (left.size() != right.size()) return false;
+    for (size_t index = 0; index < left.size(); ++index)
+        if (lowerAscii(left[index]) != lowerAscii(right[index])) return false;
+    return true;
+}
+
+inline bool startsWithInsensitive(std::wstring_view value, std::wstring_view prefix) noexcept
+{
+    return value.size() >= prefix.size()
+        && equalsInsensitive(value.substr(0, prefix.size()), prefix);
+}
+
+inline std::wstring_view sourceGroupDeviceKey(std::wstring_view value) noexcept
+{
+    constexpr std::wstring_view prefixes[] {
+        L"@device:pnp:", L"@device_pnp_", L"dshow:"
+    };
+    bool stripped = true;
+    while (stripped)
+    {
+        stripped = false;
+        for (const auto prefix : prefixes)
+            if (startsWithInsensitive(value, prefix))
+            {
+                value = value.substr(prefix.size());
+                stripped = true;
+                break;
+            }
+    }
+    const auto interfaceGuid = value.find(L"#{");
+    return interfaceGuid == std::wstring_view::npos ? value : value.substr(0, interfaceGuid);
+}
+
+inline bool samePhysicalCameraSourceGroup(std::wstring_view hint, std::wstring_view sourceGroup) noexcept
+{
+    const auto hintKey = sourceGroupDeviceKey(hint);
+    const auto sourceKey = sourceGroupDeviceKey(sourceGroup);
+    return ! hintKey.empty() && ! sourceKey.empty() && equalsInsensitive(hintKey, sourceKey);
+}
+
 inline bool isVirtualCameraDevice(std::wstring_view value) noexcept
 {
     constexpr std::wstring_view names[] {

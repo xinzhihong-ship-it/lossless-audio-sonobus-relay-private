@@ -72,5 +72,12 @@ int main()
                      "known virtual camera hint was accepted as a physical fallback");
     ok &= expect(sonobus::molixiu::shouldPersistCameraHint(L"@device_pnp_\\\\?\\usb#vid_046d&pid_0825#罗技摄像头"),
                  "Unicode physical camera hint was rejected");
+    const std::wstring_view molixiuHint = LR"(@device:pnp:\\?\usb#vid_5986&pid_212b&mi_00#7&39571d6c&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global)";
+    const std::wstring_view sourceGroup = LR"(\\?\USB#VID_5986&PID_212B&MI_00#7&39571D6C&0&0000#{e5323777-f976-4f5b-b94699c46e444}\GLOBAL)";
+    ok &= expect(sonobus::molixiu::samePhysicalCameraSourceGroup(molixiuHint, sourceGroup),
+                 "physical camera hint did not match its MediaCapture source group");
+    ok &= expect(! sonobus::molixiu::samePhysicalCameraSourceGroup(
+                     molixiuHint, LR"(\\?\USB#VID_046D&PID_0825#other#{e5323777-f976-4f5b-b94699c46e444}\GLOBAL)"),
+                 "different physical camera paths were treated as the same source group");
     return ok ? 0 : 1;
 }

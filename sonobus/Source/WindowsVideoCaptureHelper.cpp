@@ -1005,7 +1005,8 @@ hstring findSourceGroupByDisplayName(const std::wstring& name)
         const auto displayName = std::wstring(group.DisplayName().c_str());
         const auto groupId = std::wstring(group.Id().c_str());
         if ((! displayName.empty() && _wcsicmp(displayName.c_str(), name.c_str()) == 0)
-            || (! groupId.empty() && _wcsicmp(groupId.c_str(), name.c_str()) == 0))
+            || (! groupId.empty() && _wcsicmp(groupId.c_str(), name.c_str()) == 0)
+            || sonobus::molixiu::samePhysicalCameraSourceGroup(name, groupId))
             return group.Id();
     }
     return hstring {};
