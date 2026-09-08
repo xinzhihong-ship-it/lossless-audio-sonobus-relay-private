@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include "SonoBusMoLiXiuDevice.h"
 #include "SonoBusMoLiXiuFrame.h"
 
 #include <algorithm>
@@ -93,7 +94,7 @@ bool statePath(wchar_t* path, SIZE_T capacity)
 
 void writeState(const wchar_t* device)
 {
-    if (device == nullptr || *device == L'\0') return;
+    if (device == nullptr || ! sonobus::molixiu::shouldPersistCameraHint(device)) return;
     char utf8[4096] {};
     const auto bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, device, -1,
                                           utf8, static_cast<int>(std::size(utf8)), nullptr, nullptr);
@@ -158,17 +159,7 @@ bool copyLegacyWString(const void* object, wchar_t* output, DWORD& length) noexc
 
 bool isVirtualDevice(const wchar_t* value) noexcept
 {
-    if (value == nullptr) return false;
-    constexpr const wchar_t* virtualNames[] {
-        L"yyanchorvcam", L"yyanchormulvcam", L"obs virtual camera", L"webcastmate virtualcamera"
-    };
-    for (const auto* name : virtualNames)
-    {
-        const auto length = std::wcslen(name);
-        for (auto cursor = value; *cursor != L'\0'; ++cursor)
-            if (_wcsnicmp(cursor, name, length) == 0) return true;
-    }
-    return false;
+    return value != nullptr && sonobus::molixiu::isVirtualCameraDevice(value);
 }
 
 extern "C" bool __cdecl queueLegacyDevice(const void* object) noexcept

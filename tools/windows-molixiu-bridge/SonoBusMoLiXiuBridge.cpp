@@ -4,6 +4,8 @@
 #include <windows.h>
 #include <tlhelp32.h>
 
+#include "SonoBusMoLiXiuDevice.h"
+
 #include <cstdint>
 #include <cwchar>
 #include <cstring>
@@ -137,6 +139,10 @@ bool readSelectedCamera(DWORD pid, std::wstring& output)
 
 bool writeState(DWORD pid, const std::wstring& device)
 {
+    // Never replace a remembered physical source with MoLiXiu's virtual output.
+    // The helper uses this file only for SharedReadOnly physical fallback.
+    if (! sonobus::molixiu::shouldPersistCameraHint(device)) return false;
+
     wchar_t appData[32768] {};
     const auto appDataLength = GetEnvironmentVariableW(
         L"APPDATA", appData, static_cast<DWORD>(sizeof(appData) / sizeof(appData[0])));

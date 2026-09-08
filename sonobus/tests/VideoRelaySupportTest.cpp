@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPLv3-or-later WITH Appstore-exception
 
 #include "../Source/VideoRelaySupport.h"
+#include "../../tools/windows-molixiu-bridge/SonoBusMoLiXiuDevice.h"
 #include <iostream>
 
 namespace
@@ -54,5 +55,9 @@ int main()
                  "camera privacy error was not classified");
     ok &= expect(sonobus::video::utf8(u8"状态：摄像头 · 1280×720") == juce::String::fromUTF8(u8"状态：摄像头 · 1280×720"),
                  "explicit UTF-8 conversion failed");
+    ok &= expect(! sonobus::molixiu::shouldPersistCameraHint(L"@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\\yyanchorvcam"),
+                 "virtual MoLiXiu output was accepted as a physical fallback");
+    ok &= expect(sonobus::molixiu::shouldPersistCameraHint(L"@device_pnp_\\\\?\\usb#vid_046d&pid_0825#camera"),
+                 "physical camera hint was rejected");
     return ok ? 0 : 1;
 }

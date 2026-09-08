@@ -8,6 +8,7 @@
 #endif
 #include <windows.h>
 #include <mferror.h>
+#include "../../tools/windows-molixiu-bridge/SonoBusMoLiXiuDevice.h"
 #include "../../tools/windows-molixiu-bridge/SonoBusMoLiXiuFrame.h"
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Enumeration.h>
@@ -941,24 +942,9 @@ struct MoLiXiuCameraHint
     std::wstring device;
 };
 
-bool containsInsensitive(const std::wstring& value, const wchar_t* token) noexcept
-{
-    if (token == nullptr || *token == L'\0') return false;
-    const auto length = std::wcslen(token);
-    for (auto cursor = value.c_str(); *cursor != L'\0'; ++cursor)
-        if (_wcsnicmp(cursor, token, length) == 0) return true;
-    return false;
-}
-
 bool isVirtualCameraHint(const std::wstring& value) noexcept
 {
-    constexpr const wchar_t* names[] {
-        L"yyanchorvcam", L"yyanchormulvcam", L"obs virtual camera", L"webcastmate virtualcamera",
-        L"virtual camera"
-    };
-    for (const auto* name : names)
-        if (containsInsensitive(value, name)) return true;
-    return false;
+    return sonobus::molixiu::isVirtualCameraDevice(value);
 }
 
 bool readMoLiXiuCameraHint(MoLiXiuCameraHint& output)
