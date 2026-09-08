@@ -1124,9 +1124,24 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     const juce::StringArray preferred { "libx264" };
 #endif
     juce::String launchErrors;
-    // Virtual DirectShow cameras (OBS/YY etc.) are not MediaCapture devices at all;
-    // they bypass the helper entirely and go straight to the DirectShow fallback below.
+    // Only known virtual filters may use DirectShow. A physical camera that happens
+    // to be enumerated by DirectShow must stay on the helper's SharedReadOnly path;
+    // otherwise this branch would create the exact exclusive-owner conflict we avoid.
     const auto dshowOnly = desired.cameraDeviceId.startsWith("dshow:");
+    bool knownVirtualDshow = false;
+#if JUCE_WINDOWS
+    if (dshowOnly)
+        for (const auto& device : devices)
+            if (device.id == desired.cameraDeviceId)
+            {
+                knownVirtualDshow = sonobus::video::isKnownVirtualCamera(device.id, device.name);
+                break;
+            }
+    if (dshowOnly && ! knownVirtualDshow)
+        launchErrors = sonobus::video::translated(u8"物理摄像头必须使用 Windows SharedReadOnly；已拒绝独占 DirectShow");
+#endif
+    if (dshowOnly && ! knownVirtualDshow)
+        logMsg("refusing non-virtual DirectShow camera to preserve shared ownership");
     for (const auto& encoder : preferred)
     {
         if (threadShouldExit()) break;
@@ -1201,7 +1216,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
 #if JUCE_WINDOWS
     // DirectShow is only for devices explicitly enumerated through DirectShow (normally
     // virtual cameras). Physical MediaCapture devices must remain SharedReadOnly.
-    if (dshowOnly)
+    if (dshowOnly && knownVirtualDshow)
     {
         // dshow: id now carries the ASCII alternative name (@device_sw_...) when available,
         // falling back to the display name, so capture never has to match Chinese names.

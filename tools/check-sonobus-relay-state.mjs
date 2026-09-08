@@ -69,6 +69,11 @@ if (!/SharingMode\s*\(\s*MediaCaptureSharingMode::SharedReadOnly\s*\)/m.test(win
   process.exitCode = 1;
 }
 
+if (/\bDshowChild\b|\bstartFfmpegDshow\b/m.test(windowsCapture)) {
+  console.error("MoLiXiu fallback must not open a camera through exclusive DirectShow");
+  process.exitCode = 1;
+}
+
 if (!process.exitCode) {
   console.log("SonoBus relay state checks passed.");
 }

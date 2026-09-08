@@ -15,13 +15,28 @@ juce::StringArray fields(const juce::String& line, const juce::String& prefix)
 }
 }
 
+bool isKnownVirtualCamera(const juce::String& id, const juce::String& name)
+{
+    const auto value = id + " " + name;
+    return value.containsIgnoreCase("yyanchorvcam")
+        || value.containsIgnoreCase("yyanchormulvcam")
+        || value.containsIgnoreCase("obs virtual camera")
+        || value.containsIgnoreCase("webcastmate virtualcamera")
+        || value.containsIgnoreCase("virtual camera")
+        || value.contains(u8"YY开播")
+        || value.contains(u8"魔力秀");
+}
+
 juce::Array<CameraDevice> parseWindowsCameraDevices(const juce::String& output)
 {
     juce::Array<CameraDevice> devices;
     for (const auto& line : juce::StringArray::fromLines(output))
     {
         const auto values = fields(line, "SONOBUS_CAMERA\t");
-        if (values.size() >= 3 && values[1].isNotEmpty() && values[2].isNotEmpty())
+        if (values.size() >= 3 && values[1].isNotEmpty() && values[2].isNotEmpty()
+            // A physical camera must stay on the MediaCapture SharedReadOnly path.
+            // Keep DirectShow entries only when they are recognisable virtual filters.
+            && (! values[1].startsWith("dshow:") || isKnownVirtualCamera(values[1], values[2])))
             devices.add({ values[1], values[2] });
     }
     return devices;

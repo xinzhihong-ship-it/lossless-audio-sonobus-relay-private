@@ -25,6 +25,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -321,12 +322,51 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
         session.reader = nullptr;
         return false;
     };
-    // Some camera drivers accept the default reader but deliver empty media frames.
-    // Request concrete pixel formats so a successful reader also carries video data.
-    if (! startReader(MediaEncodingSubtypes::Bgra8())
-        && ! startReader(MediaEncodingSubtypes::Argb32())
-        && ! startReader(MediaEncodingSubtypes::Nv12())
-        && ! startReader(MediaEncodingSubtypes::Yuy2()))
+    // SharedReadOnly cannot change the device format. The requested reader output
+    // subtype must therefore be present in SupportedFormats; hard-coding BGRA/NV12
+    // makes otherwise shareable cameras fail with OutputFormatNotSupported (3).
+    std::vector<hstring> supportedSubtypes;
+    for (const auto& format : session.source.SupportedFormats())
+    {
+        const auto subtype = format.Subtype();
+        if (subtype.empty()) continue;
+        bool duplicate = false;
+        for (const auto& existing : supportedSubtypes)
+            if (_wcsicmp(existing.c_str(), subtype.c_str()) == 0) { duplicate = true; break; }
+        if (! duplicate) supportedSubtypes.push_back(subtype);
+    }
+
+    std::vector<hstring> readerSubtypes;
+    const hstring preferredSubtypes[] {
+        MediaEncodingSubtypes::Bgra8(), MediaEncodingSubtypes::Argb32(),
+        MediaEncodingSubtypes::Nv12(), MediaEncodingSubtypes::Yuy2()
+    };
+    for (const auto& preferred : preferredSubtypes)
+        for (const auto& supported : supportedSubtypes)
+            if (_wcsicmp(preferred.c_str(), supported.c_str()) == 0)
+            {
+                readerSubtypes.push_back(supported);
+                break;
+            }
+    if (session.mode.format)
+    {
+        const auto currentSubtype = session.mode.format.Subtype();
+        bool present = false;
+        for (const auto& candidate : readerSubtypes)
+            if (_wcsicmp(candidate.c_str(), currentSubtype.c_str()) == 0) { present = true; break; }
+        if (! present)
+            for (const auto& supported : supportedSubtypes)
+                if (_wcsicmp(supported.c_str(), currentSubtype.c_str()) == 0)
+                {
+                    readerSubtypes.push_back(supported);
+                    break;
+                }
+    }
+
+    bool readerStarted = startReader({});
+    for (const auto& subtype : readerSubtypes)
+        if (! readerStarted) readerStarted = startReader(subtype);
+    if (! readerStarted)
     {
         std::cout << "SONOBUS_ERROR=unavailable:reader-start" << std::endl;
         throw hresult_error(E_FAIL, L"The shared camera frame reader could not start.");
@@ -341,6 +381,11 @@ void stopReader(CaptureSession& session)
         session.reader.FrameArrived(session.frameToken);
         session.reader.Close();
         session.reader = nullptr;
+    }
+    if (session.capture && session.failedToken.value != 0)
+    {
+        session.capture.Failed(session.failedToken);
+        session.failedToken = {};
     }
     session.source = nullptr;
     session.state.reset();
@@ -577,55 +622,6 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments)
         throw hresult_error(HRESULT_FROM_WIN32(error));
     }
     return child;
-}
-
-std::vector<std::wstring> expandDshowArguments(const std::vector<std::wstring>& input,
-                                               uint32_t maxHeight, double maxFps, uint32_t maxBitrate)
-{
-    // The dshow input size is unknown up front, so cap the height while keeping
-    // the source aspect ratio instead of the exact rawvideo scale.
-    std::wstring filter;
-    if (maxHeight > 0) filter = L"scale=-2:'min(ih," + std::to_wstring(maxHeight) + L")'";
-    if (maxFps > 0.0)
-    {
-        if (! filter.empty()) filter += L",";
-        filter += L"fps=" + std::to_wstring(maxFps);
-    }
-    const auto nominal = automaticBitrate(1920, 1080);
-    const auto bitrate = maxBitrate > 0 ? std::min(maxBitrate, nominal) : nominal;
-    const auto gop = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(maxFps > 0.0 ? maxFps : 30.0)));
-    std::vector<std::wstring> result;
-    for (const auto& argument : input)
-    {
-        if (argument == L"@SONOBUS_FILTER@")
-        {
-            if (filter.empty())
-            {
-                if (!result.empty() && result.back() == L"-vf") result.pop_back();
-            }
-            else result.push_back(filter);
-        }
-        else if (argument == L"@SONOBUS_GOP@") result.push_back(std::to_wstring(gop));
-        else if (argument == L"@SONOBUS_BITRATE@") result.push_back(std::to_wstring(bitrate));
-        else if (argument == L"@SONOBUS_BUFSIZE@") result.push_back(std::to_wstring(bitrate / 2));
-        else result.push_back(argument);
-    }
-    return result;
-}
-
-ChildProcess startFfmpegDshow(const std::wstring& ffmpeg, const std::wstring& device,
-                              const std::vector<std::wstring>& outputArguments,
-                              uint32_t maxHeight, double maxFps, uint32_t maxBitrate)
-{
-    // quiet: a busy/gone device must not surface "already in use"-style lines that
-    // the main app classifies as a busy failure and reacts to by releasing us.
-    std::vector<std::wstring> arguments {
-        ffmpeg, L"-hide_banner", L"-loglevel", L"quiet", L"-nostdin",
-        L"-f", L"dshow", L"-i", L"video=" + device
-    };
-    const auto expandedArguments = expandDshowArguments(outputArguments, maxHeight, maxFps, maxBitrate);
-    arguments.insert(arguments.end(), expandedArguments.begin(), expandedArguments.end());
-    return spawnChildProcess(arguments);
 }
 
 std::string runCommandCapture(const std::wstring& command)
@@ -945,6 +941,26 @@ struct MoLiXiuCameraHint
     std::wstring device;
 };
 
+bool containsInsensitive(const std::wstring& value, const wchar_t* token) noexcept
+{
+    if (token == nullptr || *token == L'\0') return false;
+    const auto length = std::wcslen(token);
+    for (auto cursor = value.c_str(); *cursor != L'\0'; ++cursor)
+        if (_wcsnicmp(cursor, token, length) == 0) return true;
+    return false;
+}
+
+bool isVirtualCameraHint(const std::wstring& value) noexcept
+{
+    constexpr const wchar_t* names[] {
+        L"yyanchorvcam", L"yyanchormulvcam", L"obs virtual camera", L"webcastmate virtualcamera",
+        L"virtual camera"
+    };
+    for (const auto* name : names)
+        if (containsInsensitive(value, name)) return true;
+    return false;
+}
+
 bool readMoLiXiuCameraHint(MoLiXiuCameraHint& output)
 {
     wchar_t appData[32768] {};
@@ -990,7 +1006,10 @@ bool readMoLiXiuCameraHint(MoLiXiuCameraHint& output)
             }
         }
     }
-    return deviceFound;
+    // A virtual output is the MoLiXiu/OBS owner, not a safe physical fallback.
+    // Reject stale files from older builds instead of opening it through DirectShow
+    // and reintroducing an exclusive camera owner.
+    return deviceFound && ! isVirtualCameraHint(output.device);
 }
 
 hstring findSourceGroupByDisplayName(const std::wstring& name)
@@ -998,7 +1017,10 @@ hstring findSourceGroupByDisplayName(const std::wstring& name)
     for (const auto& group : MediaFrameSourceGroup::FindAllAsync().get())
     {
         const auto displayName = std::wstring(group.DisplayName().c_str());
-        if (! displayName.empty() && _wcsicmp(displayName.c_str(), name.c_str()) == 0) return group.Id();
+        const auto groupId = std::wstring(group.Id().c_str());
+        if ((! displayName.empty() && _wcsicmp(displayName.c_str(), name.c_str()) == 0)
+            || (! groupId.empty() && _wcsicmp(groupId.c_str(), name.c_str()) == 0))
+            return group.Id();
     }
     return hstring {};
 }
@@ -1019,7 +1041,8 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
     auto* mapped = static_cast<sonobus::molixiu::FrameHeader*>(nullptr);
 
     // Single pipe encoder, fed either from MoLiXiu hook frames or, during the
-    // fallback, from a shared MediaCapture reader on MoLiXiu's selected camera.
+    // fallback, from a SharedReadOnly MediaCapture reader on MoLiXiu's selected
+    // physical camera. This process must never become an exclusive camera owner.
     ChildProcess child;
     uint32_t childWidth = 0;
     uint32_t childHeight = 0;
@@ -1049,19 +1072,19 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
     auto fpsWindow = std::chrono::steady_clock::now();
 
     // Direct fallback: when MoLiXiu stops feeding its internal callback (camera
-    // closed, video-file playback, ...), keep streaming the camera it selected
-    // (recorded by the bridge/hook in %APPDATA%\SonoBus\molixiu-camera.txt)
-    // until hook frames resume. MediaCapture opens shared read-only; the dshow
-    // encoder is held only in short windows so MoLiXiu can always reclaim it.
-    enum class Fallback { None, SharedReader, DshowChild };
+    // closed, video-file playback, ...), keep streaming the last physical camera
+    // selected by it (recorded by the bridge/hook in
+    // %APPDATA%\SonoBus\molixiu-camera.txt) until hook frames resume. The only
+    // permitted fallback is MediaCapture SharedReadOnly; failure means waiting,
+    // never taking an exclusive DirectShow lease.
+    enum class Fallback { None, SharedReader };
     Fallback fallback = Fallback::None;
     CaptureSession direct;
+    size_t directSourceIndex = 0;
     uint64_t directSequence = 0;
-    ChildProcess dshowChild;
     bool sawDeviceHint = false;
     auto fallbackRetryAt = std::chrono::steady_clock::now();
-    auto dshowReleaseAt = std::chrono::steady_clock::time_point::max();
-    auto dshowHeartbeatAt = std::chrono::steady_clock::time_point::min();
+    auto lastDirectFrameAt = fallbackRetryAt;
 
     const auto stopFallback = [&]()
     {
@@ -1069,13 +1092,63 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
         {
             stopReader(direct);
             direct = CaptureSession {};
+            directSourceIndex = 0;
             directSequence = 0;
         }
-        else if (fallback == Fallback::DshowChild)
-        {
-            dshowChild = ChildProcess {};
-        }
         fallback = Fallback::None;
+    };
+
+    const auto startDirectSession = [&](CaptureSession session, size_t firstSource) -> bool
+    {
+        for (size_t sourceIndex = firstSource; sourceIndex < session.sources.size(); ++sourceIndex)
+        {
+            try
+            {
+                startReaderForSource(session, sourceIndex);
+                restartChild(session.mode.width, session.mode.height, session.mode.fps,
+                             sonobus::molixiu::kPixelNv12, false);
+                direct = std::move(session);
+                directSourceIndex = sourceIndex;
+                fallback = Fallback::SharedReader;
+                directSequence = 0;
+                lastDirectFrameAt = std::chrono::steady_clock::now();
+                return true;
+            }
+            catch (const hresult_error& error)
+            {
+                std::cout << "molixiu_direct_error=shared:0x" << std::hex
+                          << static_cast<uint32_t>(error.code()) << std::dec << std::endl;
+                stopReader(session);
+            }
+        }
+        return false;
+    };
+
+    const auto tryNextDirectSource = [&]() -> bool
+    {
+        for (size_t sourceIndex = directSourceIndex + 1; sourceIndex < direct.sources.size(); ++sourceIndex)
+        {
+            child = ChildProcess {};
+            stopReader(direct);
+            try
+            {
+                startReaderForSource(direct, sourceIndex);
+                restartChild(direct.mode.width, direct.mode.height, direct.mode.fps,
+                             sonobus::molixiu::kPixelNv12, false);
+                directSourceIndex = sourceIndex;
+                directSequence = 0;
+                lastDirectFrameAt = std::chrono::steady_clock::now();
+                std::cout << "capture_source=" << directSourceIndex << '\n' << std::flush;
+                return true;
+            }
+            catch (const hresult_error& error)
+            {
+                std::cout << "molixiu_direct_error=shared:0x" << std::hex
+                          << static_cast<uint32_t>(error.code()) << std::dec << std::endl;
+                stopReader(direct);
+            }
+        }
+        return false;
     };
 
     for (;;)
@@ -1149,14 +1222,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 {
                     try
                     {
-                        auto session = openSharedCamera(groupId);
-                        startReaderForSource(session, 0);
-                        restartChild(session.mode.width, session.mode.height, session.mode.fps,
-                                     sonobus::molixiu::kPixelNv12, false);
-                        direct = std::move(session);
-                        fallback = Fallback::SharedReader;
-                        directSequence = 0;
-                        started = true;
+                        started = startDirectSession(openSharedCamera(groupId), 0);
                     }
                     catch (const hresult_error& error)
                     {
@@ -1164,29 +1230,20 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                                   << static_cast<uint32_t>(error.code()) << std::dec << std::endl;
                     }
                 }
-                if (! started)
+                else
                 {
-                    try
-                    {
-                        child = ChildProcess {};  // only one encoder may publish at a time
-                        dshowChild = startFfmpegDshow(ffmpeg, hint.device, outputArguments,
-                                                      maxHeight, maxFps, maxBitrate);
-                        fallback = Fallback::DshowChild;
-                        dshowReleaseAt = std::chrono::steady_clock::now() + std::chrono::seconds(8);
-                        dshowHeartbeatAt = std::chrono::steady_clock::now();
-                        started = true;
-                    }
-                    catch (const hresult_error& error)
-                    {
-                        std::cout << "molixiu_direct_error=dshow:0x" << std::hex
-                                  << static_cast<uint32_t>(error.code()) << std::dec << std::endl;
-                    }
+                    std::cout << "molixiu_direct_error=shared:physical-source-not-found" << std::endl;
                 }
                 if (started)
                 {
                     frame.pixels.clear();
-                    std::cout << "capture_mode=molixiu-direct" << std::endl;
+                    std::cout << "capture_mode=molixiu-direct\n"
+                              << "molixiu_source=shared-readonly" << std::endl;
                 }
+            }
+            else
+            {
+                std::cout << "molixiu_direct_error=shared:no-physical-device-hint" << std::endl;
             }
             if (! started)
                 fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1239,6 +1296,23 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 child = ChildProcess {};
                 fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             }
+            else if (std::chrono::steady_clock::now() - lastDirectFrameAt
+                     > (directSequence == 0 ? std::chrono::seconds(8) : std::chrono::seconds(5)))
+            {
+                if (tryNextDirectSource())
+                {
+                    frame.pixels.clear();
+                    std::cout << "molixiu_source=shared-readonly" << std::endl;
+                }
+                else
+                {
+                    // Never keep reporting a live publisher after a shared reader
+                    // has stalled. Returning releases the reader and FFmpeg, so the
+                    // next retry can observe a newly available owner/source.
+                    std::cout << "SONOBUS_ERROR=unavailable:frame-timeout:molixiu-shared-readonly" << std::endl;
+                    return 3;
+                }
+            }
             else if (direct.state->sequence != directSequence)
             {
                 std::vector<uint8_t> pixels;
@@ -1258,6 +1332,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                             return 4;
                         offset += written;
                     }
+                    lastDirectFrameAt = std::chrono::steady_clock::now();
                     ++frames;
                     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - fpsWindow).count();
                     if (elapsed >= 3.0)
@@ -1267,33 +1342,6 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                         fpsWindow = std::chrono::steady_clock::now();
                     }
                 }
-            }
-        }
-        else if (fallback == Fallback::DshowChild)
-        {
-            if (dshowChild.process.hProcess != nullptr
-                && WaitForSingleObject(dshowChild.process.hProcess, 0) != WAIT_TIMEOUT)
-            {
-                // The dshow encoder exited (device busy or gone): retry shortly.
-                dshowChild = ChildProcess {};
-                fallback = Fallback::None;
-                fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            }
-            else if (std::chrono::steady_clock::now() >= dshowReleaseAt)
-            {
-                // Release the device for a moment so MoLiXiu (or any other app)
-                // can reclaim it; returning hook frames end the fallback first.
-                dshowChild = ChildProcess {};
-                fallback = Fallback::None;
-                fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-            }
-            else if (dshowChild.process.hProcess != nullptr
-                     && std::chrono::steady_clock::now() - dshowHeartbeatAt >= std::chrono::seconds(3))
-            {
-                // ponytail: nominal-fps heartbeat; the quiet dshow encoder hides
-                // its real rate and the main app needs capture_fps to stay alive.
-                std::cout << "capture_fps=" << (maxFps > 0.0 ? maxFps : 30.0) << '\n' << std::flush;
-                dshowHeartbeatAt = std::chrono::steady_clock::now();
             }
         }
         Sleep(3);
