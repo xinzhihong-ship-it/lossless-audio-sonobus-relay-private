@@ -57,7 +57,20 @@ int main()
                  "explicit UTF-8 conversion failed");
     ok &= expect(! sonobus::molixiu::shouldPersistCameraHint(L"@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\\yyanchorvcam"),
                  "virtual MoLiXiu output was accepted as a physical fallback");
-    ok &= expect(sonobus::molixiu::shouldPersistCameraHint(L"@device_pnp_\\\\?\\usb#vid_046d&pid_0825#camera"),
-                 "physical camera hint was rejected");
+    const std::wstring_view virtualHints[] {
+        L"@device:sw\\YYANCHORVCAM",
+        L"@device:sw\\yyanchormulvcam",
+        L"@device:sw\\yyanchormulcam",
+        L"OBS Virtual Camera",
+        L"WebcastMate VirtualCamera",
+        L"WebcastMate Virtual Camera",
+        L"YY开播plus",
+        L"魔力秀虚拟摄像头"
+    };
+    for (const auto hint : virtualHints)
+        ok &= expect(! sonobus::molixiu::shouldPersistCameraHint(hint),
+                     "known virtual camera hint was accepted as a physical fallback");
+    ok &= expect(sonobus::molixiu::shouldPersistCameraHint(L"@device_pnp_\\\\?\\usb#vid_046d&pid_0825#罗技摄像头"),
+                 "Unicode physical camera hint was rejected");
     return ok ? 0 : 1;
 }

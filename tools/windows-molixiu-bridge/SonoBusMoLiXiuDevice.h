@@ -29,8 +29,9 @@ inline bool containsInsensitive(std::wstring_view value, std::wstring_view token
 inline bool isVirtualCameraDevice(std::wstring_view value) noexcept
 {
     constexpr std::wstring_view names[] {
-        L"yyanchorvcam", L"yyanchormulvcam", L"obs virtual camera",
-        L"webcastmate virtualcamera", L"virtual camera"
+        L"yyanchorvcam", L"yyanchormulvcam", L"yyanchormulcam",
+        L"obs virtual camera", L"webcastmate virtualcamera", L"virtual camera",
+        L"yy\u5F00\u64AD", L"\u9B54\u529B\u79C0"
     };
     for (const auto name : names)
         if (containsInsensitive(value, name)) return true;

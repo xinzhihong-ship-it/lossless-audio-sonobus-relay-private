@@ -239,10 +239,26 @@ bool readerSelfTest()
     std::memcpy(longObject + 20, &longCapacity, sizeof(longCapacity));
 
     std::wstring result;
-    return readLegacyWString(GetCurrentProcess(), reinterpret_cast<std::uintptr_t>(shortObject), result)
+    const auto stringsAreReadable = readLegacyWString(GetCurrentProcess(), reinterpret_cast<std::uintptr_t>(shortObject), result)
         && result == shortValue
         && readLegacyWString(GetCurrentProcess(), reinterpret_cast<std::uintptr_t>(longObject), result)
         && result == longValue;
+    if (! stringsAreReadable) return false;
+
+    constexpr std::wstring_view virtualHints[] {
+        L"@device:sw\\YYANCHORVCAM",
+        L"@device:sw\\yyanchormulvcam",
+        L"@device:sw\\yyanchormulcam",
+        L"OBS Virtual Camera",
+        L"WebcastMate VirtualCamera",
+        L"WebcastMate Virtual Camera",
+        L"\u0059\u0059\u5F00\u64ADplus",
+        L"\u9B54\u529B\u79C0\u865A\u62DF\u6444\u50CF\u5934"
+    };
+    for (const auto hint : virtualHints)
+        if (sonobus::molixiu::shouldPersistCameraHint(hint)) return false;
+    return sonobus::molixiu::shouldPersistCameraHint(
+        L"@device_pnp_\\\\?\\usb#vid_046d&pid_0825#\u7F57\u6280\u6444\u50CF\u5934");
 }
 
 int selfTest(const wchar_t* dllPath)
