@@ -44,7 +44,19 @@ void* currentSolutionTrampoline = nullptr;
 void* isCaptureingTrampoline = nullptr;
 void* setDataCallbackTrampoline = nullptr;
 void* callbackOriginals[2] {};
-void* patchedCallbackVtable = nullptr;
+struct CallbackPatch
+{
+    CallbackPatch* next = nullptr;
+    void* vtable = nullptr;
+    void* originals[2] {};
+};
+// Records are immutable after publication and intentionally retained until the
+// host process exits. MoLiXiu may destroy a callback object immediately after
+// replacing it, so reclaiming a vtable record would make an in-flight wrapper
+// jump through freed metadata.
+CallbackPatch* volatile callbackPatches = nullptr;
+volatile LONG callbackPatchLock = 0;
+HMODULE cameraCoreReference = nullptr;
 HANDLE frameMapping = nullptr;
 sonobus::molixiu::FrameHeader* frameHeader = nullptr;
 volatile LONG frameNumber = 0;
@@ -396,6 +408,44 @@ bool createFrameMapping() noexcept
     return true;
 }
 
+bool readPointer(const void* address, void*& value) noexcept
+{
+    value = nullptr;
+    if (address == nullptr) return false;
+    DWORD raw = 0;
+    if (! readWord(static_cast<const unsigned char*>(address), 0, raw)) return false;
+    value = reinterpret_cast<void*>(static_cast<std::uintptr_t>(raw));
+    return true;
+}
+
+CallbackPatch* loadCallbackPatches() noexcept
+{
+    return static_cast<CallbackPatch*>(InterlockedCompareExchangePointer(
+        reinterpret_cast<PVOID volatile*>(&callbackPatches), nullptr, nullptr));
+}
+
+CallbackPatch* latestCallbackPatch(const void* vtable) noexcept
+{
+    for (auto* patch = loadCallbackPatches(); patch != nullptr; patch = patch->next)
+        if (patch->vtable == vtable) return patch;
+    return nullptr;
+}
+
+extern "C" void* __cdecl callbackOriginalForObject(const void* object, int index) noexcept
+{
+    if (index < 0 || index >= 2) return nullptr;
+    void* vtable = nullptr;
+    if (readPointer(object, vtable))
+    {
+        if (const auto* patch = latestCallbackPatch(vtable); patch != nullptr
+            && patch->originals[index] != nullptr)
+            return patch->originals[index];
+    }
+    // A callback can only reach a wrapper after its vtable has been published,
+    // but keep the original entry as a fail-safe for a racing object teardown.
+    return callbackOriginals[index];
+}
+
 extern "C" __declspec(naked) void hookCallback0()
 {
     __asm
@@ -406,9 +456,17 @@ extern "C" __declspec(naked) void hookCallback0()
         push eax
         call copyCallbackFrame
         add esp, 4
+        mov eax, [esp + 24]
+        push 0
+        push eax
+        call callbackOriginalForObject
+        add esp, 8
+        // [esp + 12] is PUSHAD's saved-ESP slot; POPAD skips it. Keep the
+        // selected target there so the caller's original EAX is preserved.
+        mov [esp + 12], eax
         popad
         popfd
-        jmp dword ptr [callbackOriginals + 0]
+        jmp dword ptr [esp - 24]
     }
 }
 extern "C" __declspec(naked) void hookCallback1()
@@ -421,41 +479,129 @@ extern "C" __declspec(naked) void hookCallback1()
         push eax
         call copyCallbackFrame
         add esp, 4
+        mov eax, [esp + 24]
+        push 1
+        push eax
+        call callbackOriginalForObject
+        add esp, 8
+        // [esp + 12] is PUSHAD's saved-ESP slot; POPAD skips it. Keep the
+        // selected target there so the caller's original EAX is preserved.
+        mov [esp + 12], eax
         popad
         popfd
-        jmp dword ptr [callbackOriginals + 4]
+        jmp dword ptr [esp - 24]
     }
+}
+
+bool writeCallbackVtableEntry(void* vtable, int index, void* value) noexcept
+{
+    if (vtable == nullptr || index < 0 || index >= 2) return false;
+    auto* slot = reinterpret_cast<void**>(vtable) + index;
+    DWORD oldProtection = 0;
+    if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) return false;
+
+    bool written = false;
+    __try
+    {
+        *slot = value;
+        written = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    DWORD ignored = 0;
+    VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
+    return written;
 }
 
 void patchCallbackVtable(const void* vtable) noexcept
 {
-    if (vtable == nullptr || InterlockedCompareExchangePointer(&patchedCallbackVtable,
-                                                                 const_cast<void*>(vtable), nullptr) != nullptr)
-        return;
-    // The 2021 callback ABI has two candidate video methods across the x86
-    // builds seen in the wild. Hook both; each wrapper preserves its own
-    // original entry and only copies a frame when the argument matches.
-    const auto* entries = reinterpret_cast<const void* const*>(vtable);
+    if (vtable == nullptr || InterlockedCompareExchange(&callbackPatchLock, 1, 0) != 0) return;
+
+    auto unlock = []() noexcept { InterlockedExchange(&callbackPatchLock, 0); };
+    auto* candidate = const_cast<void*>(vtable);
+    auto* previous = latestCallbackPatch(candidate);
+    const void* entries[2] {};
     const void* wrappers[] { reinterpret_cast<const void*>(&hookCallback0),
                              reinterpret_cast<const void*>(&hookCallback1) };
-    int patched = 0;
+    void* originals[2] {};
+    bool hasEntry = false;
+    bool needsPatch = false;
+
+    // Read the entries through SEH-protected loads. If the callback is already
+    // being destroyed, fail closed without leaving the patch lock held.
     for (int index = 0; index < 2; ++index)
     {
-        const auto entry = entries[index];
+        void* entry = nullptr;
+        if (! readPointer(reinterpret_cast<const unsigned char*>(candidate)
+                          + static_cast<SIZE_T>(index) * sizeof(void*), entry))
+        {
+            unlock();
+            return;
+        }
+        entries[index] = entry;
         if (entry == nullptr) continue;
-        DWORD oldProtection = 0;
-        auto* slot = reinterpret_cast<void**>(const_cast<void*>(vtable)) + index;
-        if (! VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) continue;
-        callbackOriginals[index] = const_cast<void*>(entry);
-        *slot = const_cast<void*>(wrappers[index]);
-        DWORD ignored = 0;
-        VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
-        ++patched;
+        hasEntry = true;
+        if (entry == wrappers[index])
+        {
+            if (previous == nullptr || previous->originals[index] == nullptr)
+            {
+                unlock();
+                return;
+            }
+            originals[index] = previous->originals[index];
+        }
+        else
+        {
+            needsPatch = true;
+            originals[index] = entry;
+        }
     }
-    if (patched == 0)
-        InterlockedExchangePointer(&patchedCallbackVtable, nullptr);
-    else
-        FlushInstructionCache(GetCurrentProcess(), const_cast<void*>(vtable), sizeof(void*) * 2);
+    if (! hasEntry || ! needsPatch) {
+        unlock();
+        return;
+    }
+
+    // Publish immutable metadata before exposing either wrapper in the vtable.
+    // A frame callback can begin on another thread immediately after the first
+    // slot is changed, so it must never observe a wrapper without its original.
+    auto* patch = static_cast<CallbackPatch*>(VirtualAlloc(nullptr, sizeof(CallbackPatch),
+                                                            MEM_RESERVE | MEM_COMMIT,
+                                                            PAGE_READWRITE));
+    if (patch == nullptr)
+    {
+        unlock();
+        return;
+    }
+    patch->vtable = candidate;
+    patch->originals[0] = originals[0];
+    patch->originals[1] = originals[1];
+    patch->next = loadCallbackPatches();
+    callbackOriginals[0] = originals[0] != nullptr ? originals[0] : callbackOriginals[0];
+    callbackOriginals[1] = originals[1] != nullptr ? originals[1] : callbackOriginals[1];
+    MemoryBarrier();
+    InterlockedExchangePointer(reinterpret_cast<PVOID volatile*>(&callbackPatches), patch);
+
+    bool patched[2] {};
+    for (int index = 0; index < 2; ++index)
+    {
+        if (entries[index] == nullptr || entries[index] == wrappers[index]) continue;
+        if (! writeCallbackVtableEntry(candidate, index, const_cast<void*>(wrappers[index])))
+        {
+            // Keep the immutable record: if rollback races with an in-flight
+            // callback, it still contains the correct original target. A later
+            // pass can retry any slot that remains unpatched.
+            for (int rollback = 0; rollback < 2; ++rollback)
+                if (patched[rollback])
+                    writeCallbackVtableEntry(candidate, rollback, const_cast<void*>(entries[rollback]));
+            FlushInstructionCache(GetCurrentProcess(), candidate, sizeof(void*) * 2);
+            unlock();
+            return;
+        }
+        patched[index] = true;
+    }
+    FlushInstructionCache(GetCurrentProcess(), candidate, sizeof(void*) * 2);
+    unlock();
 }
 
 void patchCallbackFromWeak(const void* weakPointer) noexcept
@@ -604,10 +750,18 @@ bool installHook(void* target, void* replacement, SIZE_T length, const unsigned 
     copy[length] = 0xE9;
     *reinterpret_cast<std::int32_t*>(copy + length + 1) =
         static_cast<std::int32_t>(static_cast<unsigned char*>(target) + length - (copy + length + 5));
+    FlushInstructionCache(GetCurrentProcess(), copy, length + 5);
+
+    // The hook can be entered as soon as the target's first byte becomes a
+    // jump. Publish its trampoline first so that an early caller never sees a
+    // valid replacement with a null trampoline.
+    InterlockedExchangePointer(reinterpret_cast<PVOID volatile*>(trampoline), copy);
+    MemoryBarrier();
 
     DWORD oldProtection = 0;
     if (! VirtualProtect(target, length, PAGE_EXECUTE_READWRITE, &oldProtection))
     {
+        InterlockedExchangePointer(reinterpret_cast<PVOID volatile*>(trampoline), nullptr);
         VirtualFree(copy, 0, MEM_RELEASE);
         return false;
     }
@@ -619,8 +773,72 @@ bool installHook(void* target, void* replacement, SIZE_T length, const unsigned 
     FlushInstructionCache(GetCurrentProcess(), target, length);
     DWORD ignored = 0;
     VirtualProtect(target, length, oldProtection, &ignored);
-    *trampoline = copy;
     return true;
+}
+
+bool hookAlreadyInstalled(void* target, void* replacement) noexcept
+{
+    if (target == nullptr || replacement == nullptr) return false;
+    unsigned char bytes[5] {};
+    std::memcpy(bytes, target, sizeof(bytes));
+    if (bytes[0] != 0xE9) return false;
+    const auto relative = *reinterpret_cast<const std::int32_t*>(bytes + 1);
+    const auto destination = reinterpret_cast<std::uintptr_t>(target) + 5
+                           + static_cast<std::intptr_t>(relative);
+    return reinterpret_cast<void*>(destination) == replacement;
+}
+
+bool ensureHook(void* target, void* replacement, SIZE_T length, const unsigned char* expected,
+                void** trampoline, bool& changed)
+{
+    if (hookAlreadyInstalled(target, replacement)) return *trampoline != nullptr;
+    if (! installHook(target, replacement, length, expected, trampoline)) return false;
+    changed = true;
+    return true;
+}
+
+bool installCameraCoreHooks(HMODULE cameraCore, bool& changed)
+{
+    if (cameraCore == nullptr) return false;
+    const auto setCurrentDevice = GetProcAddress(cameraCore,
+        "?setCurrentDevice@RealCamera@@QAEXABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
+    const auto startCapture = GetProcAddress(cameraCore,
+        "?startCapture@RealCamera@@QAEXAAV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
+    const auto startCaptureWindow = GetProcAddress(cameraCore,
+        "?startCapture@RealCamera@@QAEXPAUHWND__@@ABUtagRECT@@AAV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
+    const auto currentSolution = GetProcAddress(cameraCore,
+        "?getCurrentSolution@RealCamera@@QAEHXZ");
+    const auto isCaptureing = GetProcAddress(cameraCore,
+        "?isCaptureing@RealCamera@@QAE_NXZ");
+    const auto setDataCallback = GetProcAddress(cameraCore,
+        "?setDataCallback@RealCamera@@QAEXAAV?$weak_ptr@VSourceDataCallBack@@@boost@@@Z");
+    const unsigned char setExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
+    const unsigned char startExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 };
+    const unsigned char windowExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
+    const unsigned char currentSolutionExpected[] = { 0x8B, 0x09, 0x8B, 0x41, 0x08 };
+    const unsigned char isCaptureingExpected[] = { 0x8B, 0x01, 0x83, 0x78, 0x18, 0x00 };
+    const unsigned char setDataCallbackExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45 };
+
+    const bool setCurrentDeviceReady = ensureHook(
+        reinterpret_cast<void*>(setCurrentDevice), reinterpret_cast<void*>(&hookSetCurrentDevice),
+        kSetCurrentDeviceHookLength, setExpected, &setCurrentDeviceTrampoline, changed);
+    const bool startCaptureReady = ensureHook(
+        reinterpret_cast<void*>(startCapture), reinterpret_cast<void*>(&hookStartCapture),
+        kStartCaptureHookLength, startExpected, &startCaptureTrampoline, changed);
+    const bool startCaptureWindowReady = ensureHook(
+        reinterpret_cast<void*>(startCaptureWindow), reinterpret_cast<void*>(&hookStartCaptureWindow),
+        kStartCaptureWindowHookLength, windowExpected, &startCaptureWindowTrampoline, changed);
+    const bool currentSolutionReady = ensureHook(
+        reinterpret_cast<void*>(currentSolution), reinterpret_cast<void*>(&hookCurrentSolution),
+        kCurrentSolutionHookLength, currentSolutionExpected, &currentSolutionTrampoline, changed);
+    const bool isCaptureingReady = ensureHook(
+        reinterpret_cast<void*>(isCaptureing), reinterpret_cast<void*>(&hookIsCaptureing),
+        kIsCaptureingHookLength, isCaptureingExpected, &isCaptureingTrampoline, changed);
+    const bool setDataCallbackReady = ensureHook(
+        reinterpret_cast<void*>(setDataCallback), reinterpret_cast<void*>(&hookSetDataCallback),
+        kSetDataCallbackHookLength, setDataCallbackExpected, &setDataCallbackTrampoline, changed);
+    return setCurrentDeviceReady && startCaptureReady && startCaptureWindowReady
+        && currentSolutionReady && isCaptureingReady && setDataCallbackReady;
 }
 
 void copyPendingAndWrite()
@@ -644,53 +862,36 @@ DWORD WINAPI bridgeThread(void*)
     InitializeCriticalSection(&pendingLock);
     pendingEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (pendingEvent == nullptr) return 0;
-
-    HMODULE cameraCore = nullptr;
-    for (int attempt = 0; attempt < 300 && cameraCore == nullptr; ++attempt)
-    {
-        cameraCore = GetModuleHandleW(L"CameraCore.dll");
-        if (cameraCore == nullptr) Sleep(100);
-    }
-    if (cameraCore == nullptr) return 0;
     createFrameMapping();
+    bool selectionPending = true;
 
-    const auto setCurrentDevice = GetProcAddress(cameraCore,
-        "?setCurrentDevice@RealCamera@@QAEXABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
-    const auto startCapture = GetProcAddress(cameraCore,
-        "?startCapture@RealCamera@@QAEXAAV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
-    const auto startCaptureWindow = GetProcAddress(cameraCore,
-        "?startCapture@RealCamera@@QAEXPAUHWND__@@ABUtagRECT@@AAV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@@Z");
-    const auto currentSolution = GetProcAddress(cameraCore,
-        "?getCurrentSolution@RealCamera@@QAEHXZ");
-    const auto isCaptureing = GetProcAddress(cameraCore,
-        "?isCaptureing@RealCamera@@QAE_NXZ");
-    const auto setDataCallback = GetProcAddress(cameraCore,
-        "?setDataCallback@RealCamera@@QAEXAAV?$weak_ptr@VSourceDataCallBack@@@boost@@@Z");
-    const unsigned char setExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
-    const unsigned char startExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 };
-    const unsigned char windowExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x09 };
-    installHook(reinterpret_cast<void*>(setCurrentDevice), reinterpret_cast<void*>(&hookSetCurrentDevice),
-                kSetCurrentDeviceHookLength, setExpected, &setCurrentDeviceTrampoline);
-    installHook(reinterpret_cast<void*>(startCapture), reinterpret_cast<void*>(&hookStartCapture),
-                kStartCaptureHookLength, startExpected, &startCaptureTrampoline);
-    installHook(reinterpret_cast<void*>(startCaptureWindow), reinterpret_cast<void*>(&hookStartCaptureWindow),
-                kStartCaptureWindowHookLength, windowExpected, &startCaptureWindowTrampoline);
-
-    const unsigned char currentSolutionExpected[] = { 0x8B, 0x09, 0x8B, 0x41, 0x08 };
-    const unsigned char isCaptureingExpected[] = { 0x8B, 0x01, 0x83, 0x78, 0x18, 0x00 };
-    installHook(reinterpret_cast<void*>(currentSolution), reinterpret_cast<void*>(&hookCurrentSolution),
-                kCurrentSolutionHookLength, currentSolutionExpected, &currentSolutionTrampoline);
-    installHook(reinterpret_cast<void*>(isCaptureing), reinterpret_cast<void*>(&hookIsCaptureing),
-                kIsCaptureingHookLength, isCaptureingExpected, &isCaptureingTrampoline);
-    const unsigned char setDataCallbackExpected[] = { 0x55, 0x8B, 0xEC, 0x8B, 0x45 };
-    installHook(reinterpret_cast<void*>(setDataCallback), reinterpret_cast<void*>(&hookSetDataCallback),
-                kSetDataCallbackHookLength, setDataCallbackExpected, &setDataCallbackTrampoline);
-
-    InterlockedExchange(&bridgeReady, 1);
-    for (int attempt = 0; attempt < 50 && ! queueExistingSelection(); ++attempt) Sleep(100);
     for (;;)
     {
-        if (WaitForSingleObject(pendingEvent, INFINITE) == WAIT_OBJECT_0) copyPendingAndWrite();
+        // Hold a module reference for the lifetime of the injected hook. A bare
+        // GetModuleHandleW result can become dangling while close/reopen is
+        // unloading CameraCore between GetProcAddress and the patch write.
+        if (cameraCoreReference == nullptr)
+        {
+            HMODULE discovered = nullptr;
+            if (GetModuleHandleExW(0, L"CameraCore.dll", &discovered))
+                cameraCoreReference = discovered;
+        }
+
+        bool changed = false;
+        const auto hooksReady = cameraCoreReference != nullptr
+                             && installCameraCoreHooks(cameraCoreReference, changed);
+        if (hooksReady)
+        {
+            InterlockedExchange(&bridgeReady, 1);
+            if (changed) selectionPending = true;
+            // The camera may already be open when the hook is installed. Keep
+            // retrying until its private state has produced a real camera
+            // object; later close/reopen transitions are handled by the hooks.
+            if (selectionPending && queueExistingSelection())
+                selectionPending = false;
+        }
+        if (WaitForSingleObject(pendingEvent, 250) == WAIT_OBJECT_0)
+            copyPendingAndWrite();
     }
 }
 }
@@ -705,6 +906,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     return TRUE;
 }
 
+void callbackSelfTestOriginal0() noexcept {}
+void callbackSelfTestOriginal1() noexcept {}
+void callbackSelfTestOriginal2() noexcept {}
+void callbackSelfTestOriginal3() noexcept {}
+
 extern "C" __declspec(dllexport) int __cdecl SonoBusMoLiXiuLayoutSelfTest()
 {
     if (sizeof(sonobus::molixiu::FrameHeader) != 40
@@ -715,5 +921,26 @@ extern "C" __declspec(dllexport) int __cdecl SonoBusMoLiXiuLayoutSelfTest()
     int camera = 0;
     *reinterpret_cast<const unsigned char**>(sharedData + kSharedDataPointerOffset) = state;
     *reinterpret_cast<const void**>(state) = &camera;
-    return currentCameraFromSharedData(sharedData) == &camera ? 0 : 1;
+    if (currentCameraFromSharedData(sharedData) != &camera) return 1;
+
+    // Closing/reopening the camera can give MoLiXiu a fresh callback vtable.
+    // Keep the two original targets independent, as the live wrappers do.
+    static void* firstVtable[2] {
+        reinterpret_cast<void*>(&callbackSelfTestOriginal0),
+        reinterpret_cast<void*>(&callbackSelfTestOriginal1)
+    };
+    static void* secondVtable[2] {
+        reinterpret_cast<void*>(&callbackSelfTestOriginal2),
+        reinterpret_cast<void*>(&callbackSelfTestOriginal3)
+    };
+    void* firstObject[1] { firstVtable };
+    void* secondObject[1] { secondVtable };
+    patchCallbackVtable(firstVtable);
+    patchCallbackVtable(secondVtable);
+    if (firstVtable[0] != reinterpret_cast<void*>(&hookCallback0)
+        || secondVtable[0] != reinterpret_cast<void*>(&hookCallback0)
+        || callbackOriginalForObject(firstObject, 0) != reinterpret_cast<void*>(&callbackSelfTestOriginal0)
+        || callbackOriginalForObject(secondObject, 0) != reinterpret_cast<void*>(&callbackSelfTestOriginal2))
+        return 3;
+    return 0;
 }
