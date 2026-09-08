@@ -82,8 +82,13 @@ try {
   }
   $payloadManifest = Get-Content -LiteralPath $payloadManifestPath -Raw | ConvertFrom-Json
   if ($payloadManifest.schemaVersion -ne 1) { throw "Unsupported build manifest schema." }
+  $installedManifestPath = Join-Path $appDir "build-manifest.json"
+  $payloadManifestHash = (Get-FileHash -LiteralPath $payloadManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $installedManifestHash = (Get-FileHash -LiteralPath $installedManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($installedManifestHash -ne $payloadManifestHash) {
+    throw "Installed build manifest checksum mismatch: $installedManifestPath"
+  }
   $hashChecks = @(
-    @{ RelativePath = "build-manifest.json"; Destinations = @((Join-Path $appDir "build-manifest.json")) },
     @{ RelativePath = "SonoBusVideoCaptureHelper.exe"; Destinations = @(
       (Join-Path $appDir "SonoBusVideoCaptureHelper.exe"),
       (Join-Path $pluginDirs[0] "Contents/x86_64-win/SonoBusVideoCaptureHelper.exe"),
