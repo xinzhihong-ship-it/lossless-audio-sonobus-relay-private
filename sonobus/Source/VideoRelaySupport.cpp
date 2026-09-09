@@ -20,11 +20,27 @@ bool isKnownVirtualCamera(const juce::String& id, const juce::String& name)
     const auto value = id + " " + name;
     return value.containsIgnoreCase("yyanchorvcam")
         || value.containsIgnoreCase("yyanchormulvcam")
+        || value.containsIgnoreCase("yyanchormulcam")
         || value.containsIgnoreCase("obs virtual camera")
         || value.containsIgnoreCase("webcastmate virtualcamera")
         || value.containsIgnoreCase("virtual camera")
         || value.contains(u8"YY开播")
         || value.contains(u8"魔力秀");
+}
+
+bool isMoLiXiuBridgeCamera(const juce::String& id, const juce::String& name)
+{
+    // YYAnchor exposes a normal DirectShow filter. The private bridge is only
+    // valid for a compatible molixiu.exe host; the device name alone must not
+    // silently redirect YYAnchor to --publish-molixiu.
+    const auto value = id + " " + name;
+    return ! value.containsIgnoreCase("yyanchorvcam")
+        && ! value.containsIgnoreCase("yyanchormulvcam")
+        && ! value.containsIgnoreCase("yyanchormulcam")
+        && (value.containsIgnoreCase("molixiu")
+            || value.containsIgnoreCase("ishow")
+            || value.contains(u8"YY开播")
+            || value.contains(u8"魔力秀"));
 }
 
 juce::Array<CameraDevice> parseWindowsCameraDevices(const juce::String& output)

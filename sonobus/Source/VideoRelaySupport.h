@@ -41,6 +41,9 @@ inline juce::String translated(const char* text)
 }
 
 bool isKnownVirtualCamera(const juce::String& id, const juce::String& name);
+// True only for devices intended for the private molixiu.exe frame bridge;
+// known YYAnchor DirectShow filters stay on the ordinary DirectShow path.
+bool isMoLiXiuBridgeCamera(const juce::String& id, const juce::String& name);
 juce::Array<CameraDevice> parseWindowsCameraDevices(const juce::String& output);
 juce::Array<CameraMode> parseWindowsCameraModes(const juce::String& output);
 CameraMode parseDshowCameraMode(const juce::String& output);

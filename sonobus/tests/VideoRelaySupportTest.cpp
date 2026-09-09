@@ -21,6 +21,7 @@ int main()
         "SONOBUS_CAMERA\tgroup-id-2\tOBS Virtual Camera\r\n"
         "SONOBUS_CAMERA\tdshow:@device_sw_physical\tIntegrated Camera\r\n"
         "SONOBUS_CAMERA\tdshow:@device_sw_obs\tOBS Virtual Camera\r\n"
+        "SONOBUS_CAMERA\tdshow:@device_sw_{860BB310-5D01-11D0-BD3B-00A0C911CE86}\\yyanchorvcam\tYY Anchor Camera\r\n"
         "SONOBUS_MODE\t1920\t1080\t59.94\r\n"
         "SONOBUS_MODE\t1280\t720\t30\r\n"
         "SONOBUS_MODE\t640\t480\t15\r\n"
@@ -30,14 +31,29 @@ int main()
     const auto dshowMode = sonobus::video::parseDshowCameraMode(
         "Input #0, dshow, from 'video=@device_sw_...':\n"
         "Stream #0:0: Video: rawvideo, bgr24, 1920x1080, 25 fps, 25 tbr\n");
-    bool ok = expect(devices.size() == 3, "helper protocol did not filter physical DirectShow duplicates");
+    bool ok = expect(devices.size() == 4, "helper protocol did not filter physical DirectShow duplicates");
     ok &= expect(devices.size() > 0 && devices[0].id == "group-id-1", "camera source-group ID was lost");
-    ok &= expect(devices.size() == 3 && devices[2].id == "dshow:@device_sw_obs",
+    ok &= expect(devices.size() == 4 && devices[2].id == "dshow:@device_sw_obs",
                  "known virtual DirectShow camera was filtered unexpectedly");
+    ok &= expect(devices.size() == 4 && devices[3].id.containsIgnoreCase("yyanchorvcam"),
+                 "YY Anchor DirectShow camera was filtered unexpectedly");
     ok &= expect(! sonobus::video::isKnownVirtualCamera("group-id-1", "Integrated Camera"),
                  "physical camera was classified as virtual");
     ok &= expect(sonobus::video::isKnownVirtualCamera("dshow:@device_sw_obs", "OBS Virtual Camera"),
                  "virtual camera was not classified as virtual");
+    ok &= expect(sonobus::video::isKnownVirtualCamera("dshow:@device_sw_yyanchormulcam", "YY Anchor Camera"),
+                 "YY Anchor multi-client camera was not classified as virtual");
+    ok &= expect(! sonobus::video::isMoLiXiuBridgeCamera(
+                     "dshow:@device_sw_{860BB310-5D01-11D0-BD3B-00A0C911CE86}\\\\yyanchorvcam", u8"魔力秀"),
+                 "YY Anchor camera was routed to the private MoLiXiu bridge");
+    ok &= expect(! sonobus::video::isMoLiXiuBridgeCamera("dshow:@device_sw_yyanchormulvcam", "YY开播"),
+                 "YY Anchor multi-client camera was routed to the private MoLiXiu bridge");
+    ok &= expect(! sonobus::video::isMoLiXiuBridgeCamera("dshow:@device_sw_yyanchormulcam", "魔力秀"),
+                 "YY Anchor multi-client camera alias was routed to the private MoLiXiu bridge");
+    ok &= expect(sonobus::video::isMoLiXiuBridgeCamera("molixiu-camera", {}),
+                 "MoLiXiu bridge camera marker was not recognized");
+    ok &= expect(sonobus::video::isMoLiXiuBridgeCamera("ishow-camera", {}),
+                 "iShow bridge camera marker was not recognized");
     ok &= expect(devices.size() > 0 && devices[0].name == "Integrated Camera", "friendly camera name was lost");
     ok &= expect(modes.size() == 3 && modes[0].fps >= 59.0 && modes[1].fps == 30.0 && modes[2].fps == 15.0,
                  "helper protocol did not preserve real source FPS modes or accepted an invalid mode");

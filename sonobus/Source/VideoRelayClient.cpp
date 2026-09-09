@@ -1512,13 +1512,7 @@ juce::String VideoRelayClient::findWindowsCaptureHelper() const
 #if JUCE_WINDOWS
 bool VideoRelayClient::isMoLiXiuCamera(const CameraDevice& device) const
 {
-    const auto value = device.id + " " + device.name;
-    return value.containsIgnoreCase("molixiu")
-        || value.containsIgnoreCase("ishow")
-        || value.containsIgnoreCase("yyanchorvcam")
-        || value.containsIgnoreCase("yyanchormulvcam")
-        || value.contains(u8"YY开播")
-        || value.contains(u8"魔力秀");
+    return sonobus::video::isMoLiXiuBridgeCamera(device.id, device.name);
 }
 
 juce::String VideoRelayClient::findWindowsMoLiXiuBridge() const
