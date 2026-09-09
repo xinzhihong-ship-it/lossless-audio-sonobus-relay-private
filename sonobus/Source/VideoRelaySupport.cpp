@@ -3,6 +3,11 @@
 
 #include "VideoRelaySupport.h"
 
+#if JUCE_WINDOWS
+#include <windows.h>
+#include <tlhelp32.h>
+#endif
+
 #include <regex>
 
 namespace sonobus::video
@@ -115,4 +120,30 @@ juce::String lastOutputLine(const juce::String& output, int maxLength)
     return lines.isEmpty() ? output.trim().substring(0, maxLength)
                            : lines[lines.size() - 1].trim().substring(0, maxLength);
 }
+
+#if JUCE_WINDOWS
+bool isMoLiXiuRunning()
+{
+    const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W entry {};
+    entry.dwSize = sizeof(entry);
+    bool found = false;
+    if (Process32FirstW(snapshot, &entry))
+    {
+        do
+        {
+            if (juce::String(entry.szExeFile).equalsIgnoreCase("molixiu.exe"))
+            {
+                found = true;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return found;
+}
+#else
+bool isMoLiXiuRunning() { return false; }
+#endif
 }
