@@ -282,6 +282,8 @@ void VideoRelayClient::stop()
         actualBitrate = 0;
         progressBuffer.clear();
         cameraError.clear();
+        virtualFallbackIds.clear();
+        virtualFallbackIndex = -1;
         enrollmentKey.reset();
         enrollmentHandler = {};
         pairingRejected = false;
@@ -392,6 +394,33 @@ void VideoRelayClient::runVideoLoop()
         if (! selectedIsMoLiXiu)
             selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
 #endif
+#if JUCE_WINDOWS
+        // A virtual camera (YY/OBS/...) is the last-resort source for a MoLiXiu
+        // selection: the physical camera is often held exclusively by the very app
+        // that feeds that virtual output, while reading the virtual camera needs no
+        // exclusive access and still shows the picture that app shows.
+        const auto refreshVirtualFallbacks = [&]()
+        {
+            if (! selectedIsMoLiXiu) return;
+            virtualFallbackIds.clear();
+            for (const auto& device : devices)
+            {
+                if (! device.id.startsWith("dshow:")) continue;
+                if (device.id == selectedCamera) continue;
+                if (sonobus::video::isMoLiXiuBridgeCamera(device.id, device.name)) continue;
+                if (! sonobus::video::isKnownVirtualCamera(device.id, device.name)) continue;
+                virtualFallbackIds.addIfNotAlreadyThere(device.id);
+            }
+        };
+        const auto advanceVirtualFallback = [&]()
+        {
+            if (! selectedIsMoLiXiu || virtualFallbackIds.isEmpty()) return;
+            virtualFallbackIndex = virtualFallbackIndex + 1 < virtualFallbackIds.size()
+                                 ? virtualFallbackIndex + 1 : -1;
+            logMsg("virtual fallback index=" + juce::String(virtualFallbackIndex));
+        };
+#endif
+
         bool selectedMissing = desired.cameraDeviceId.isNotEmpty();
         for (const auto& device : devices)
             if (device.id == desired.cameraDeviceId) selectedMissing = false;
@@ -452,13 +481,24 @@ void VideoRelayClient::runVideoLoop()
             auto captureCamera = selectedCamera;
 #if JUCE_WINDOWS
             if (selectedIsMoLiXiu)
-                captureCamera = "molixiu-hook";
+            {
+                refreshVirtualFallbacks();
+                captureCamera = virtualFallbackIndex >= 0 && virtualFallbackIndex < virtualFallbackIds.size()
+                              ? virtualFallbackIds[virtualFallbackIndex]
+                              : juce::String("molixiu-hook");
+            }
 #endif
 
             bool cameraAvailable = false;
 #if JUCE_WINDOWS
             if (selectedIsMoLiXiu)
-                cameraAvailable = findWindowsMoLiXiuBridge().isNotEmpty();
+            {
+                if (captureCamera == "molixiu-hook")
+                    cameraAvailable = findWindowsMoLiXiuBridge().isNotEmpty();
+                else
+                    for (const auto& device : devices)
+                        if (device.id == captureCamera) cameraAvailable = true;
+            }
             else
 #endif
                 for (const auto& device : devices)
@@ -492,6 +532,9 @@ void VideoRelayClient::runVideoLoop()
                 {
                     readPublisherProgress();
                     stopPublisher();
+#if JUCE_WINDOWS
+                    advanceVirtualFallback();
+#endif
                     runningMode = {};
                     nextPublisherAttemptMs = nowHi + 5000.0;
                     setStatus(Status::error, lastError.isNotEmpty() ? lastError : sonobus::video::translated(u8"H.264 编码进程已退出"));
@@ -535,6 +578,9 @@ void VideoRelayClient::runVideoLoop()
                         else
                         {
                             runningMode = {};
+#if JUCE_WINDOWS
+                            advanceVirtualFallback();
+#endif
                             setStatus(Status::cameraUnavailable, lastError.isNotEmpty() ? lastError
                                 : sonobus::video::translated(u8"无法启动 H.264 硬件编码"));
                         }
@@ -554,6 +600,9 @@ void VideoRelayClient::runVideoLoop()
             {
                 const auto stalled = publisherStalled;
                 stopPublisher();
+#if JUCE_WINDOWS
+                advanceVirtualFallback();
+#endif
                 runningMode = {};
                 nextPublisherAttemptMs = juce::Time::getMillisecondCounterHiRes() + 5000.0;
                 setStatus(Status::cameraUnavailable, stalled
