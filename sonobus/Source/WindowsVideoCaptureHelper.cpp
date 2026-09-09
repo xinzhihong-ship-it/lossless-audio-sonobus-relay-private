@@ -576,10 +576,18 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments)
     SECURITY_ATTRIBUTES security { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
     HANDLE inputRead = INVALID_HANDLE_VALUE;
     HANDLE inputWrite = INVALID_HANDLE_VALUE;
-    if (!CreatePipe(&inputRead, &inputWrite, &security, 0)) throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
+    if (!CreatePipe(&inputRead, &inputWrite, &security, 0))
+    {
+        const auto error = GetLastError();
+        std::cout << "ffmpeg_spawn_stage=create-pipe:0x" << std::hex
+                  << static_cast<uint32_t>(error) << std::dec << std::endl;
+        throw hresult_error(HRESULT_FROM_WIN32(error));
+    }
     if (!SetHandleInformation(inputWrite, HANDLE_FLAG_INHERIT, 0))
     {
         const auto error = GetLastError();
+        std::cout << "ffmpeg_spawn_stage=set-handle-information:0x" << std::hex
+                  << static_cast<uint32_t>(error) << std::dec << std::endl;
         CloseHandle(inputRead);
         CloseHandle(inputWrite);
         throw hresult_error(HRESULT_FROM_WIN32(error));
@@ -605,6 +613,8 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments)
     if (!child.job)
     {
         const auto error = GetLastError();
+        std::cout << "ffmpeg_spawn_stage=create-job:0x" << std::hex
+                  << static_cast<uint32_t>(error) << std::dec << std::endl;
         CloseHandle(inputRead);
         throw hresult_error(HRESULT_FROM_WIN32(error));
     }
@@ -613,6 +623,8 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments)
     if (!SetInformationJobObject(child.job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
     {
         const auto error = GetLastError();
+        std::cout << "ffmpeg_spawn_stage=set-job-information:0x" << std::hex
+                  << static_cast<uint32_t>(error) << std::dec << std::endl;
         CloseHandle(inputRead);
         throw hresult_error(HRESULT_FROM_WIN32(error));
     }
@@ -622,6 +634,8 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments)
     if (!CreateProcessW(arguments.front().c_str(), writable.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child.process))
     {
         const auto error = GetLastError();
+        std::cout << "ffmpeg_spawn_stage=create-process:0x" << std::hex
+                  << static_cast<uint32_t>(error) << std::dec << " path=" << arguments.front() << std::endl;
         CloseHandle(inputRead);
         throw hresult_error(HRESULT_FROM_WIN32(error));
     }
@@ -629,6 +643,8 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments)
     if (!AssignProcessToJobObject(child.job, child.process.hProcess))
     {
         const auto error = GetLastError();
+        std::cout << "ffmpeg_spawn_stage=assign-job:0x" << std::hex
+                  << static_cast<uint32_t>(error) << std::dec << std::endl;
         TerminateProcess(child.process.hProcess, 1);
         WaitForSingleObject(child.process.hProcess, 5000);
         throw hresult_error(HRESULT_FROM_WIN32(error));
@@ -1104,8 +1120,18 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             {
                 startReaderForSource(session, sourceIndex);
                 std::cout << "capture_source_ready=" << sourceIndex << '\n' << std::flush;
-                restartChild(session.mode.width, session.mode.height, session.mode.fps,
-                             sonobus::molixiu::kPixelNv12, false);
+                try
+                {
+                    restartChild(session.mode.width, session.mode.height, session.mode.fps,
+                                 sonobus::molixiu::kPixelNv12, false);
+                }
+                catch (const hresult_error& error)
+                {
+                    std::cout << "molixiu_direct_error=ffmpeg:0x" << std::hex
+                              << static_cast<uint32_t>(error.code()) << std::dec << std::endl;
+                    stopReader(session);
+                    continue;
+                }
                 direct = std::move(session);
                 directSourceIndex = sourceIndex;
                 fallback = Fallback::SharedReader;
