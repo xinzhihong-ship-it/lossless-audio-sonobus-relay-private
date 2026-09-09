@@ -28,6 +28,7 @@
 #include <cstring>
 #include <cwchar>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -1140,6 +1141,10 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
     std::vector<std::wstring> fallbackCandidates;
     size_t fallbackCandidateIndex = 0;
     auto fallbackReleaseAt = fallbackRetryAt;
+    // A camera that just failed to deliver a first frame is normally held
+    // exclusively by another application, so it is retried last for a while
+    // instead of blocking every fallback attempt on the same occupied device.
+    std::map<std::wstring, std::chrono::steady_clock::time_point> fallbackBusyUntil;
 
     const auto stopFallback = [&]()
     {
@@ -1217,11 +1222,32 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
         return false;
     };
 
-    // Tries the remaining physical cameras in order, always through MediaCapture
-    // SharedReadOnly (never an exclusive lease), and reports which one is used.
-    const auto startFallbackCandidate = [&](size_t firstCandidate) -> bool
+    const auto markFallbackBusy = [&](size_t index)
     {
-        for (size_t index = firstCandidate; index < fallbackCandidates.size(); ++index)
+        if (index >= fallbackCandidates.size()) return;
+        fallbackBusyUntil[fallbackCandidates[index]] =
+            std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        std::cout << "molixiu_camera_busy=" << index << std::endl;
+    };
+
+    // Tries every physical camera except `skipCandidate`, preferring cameras that
+    // are not known to be occupied, always through MediaCapture SharedReadOnly
+    // (never an exclusive lease), and reports which one is actually used.
+    const auto startFallbackCandidate = [&](size_t skipCandidate) -> bool
+    {
+        const auto now = std::chrono::steady_clock::now();
+        const auto busy = [&](size_t index)
+        {
+            const auto entry = fallbackBusyUntil.find(fallbackCandidates[index]);
+            return entry != fallbackBusyUntil.end() && entry->second > now;
+        };
+        std::vector<size_t> order;
+        order.reserve(fallbackCandidates.size());
+        for (size_t index = 0; index < fallbackCandidates.size(); ++index)
+            if (index != skipCandidate && ! busy(index)) order.push_back(index);
+        for (size_t index = 0; index < fallbackCandidates.size(); ++index)
+            if (index != skipCandidate && busy(index)) order.push_back(index);
+        for (const auto index : order)
         {
             const auto groupId = findSourceGroupByDisplayName(fallbackCandidates[index]);
             if (groupId.empty())
@@ -1319,7 +1345,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 std::cout << "molixiu_direct_error=shared:no-physical-device-hint" << std::endl;
             fallbackCandidates = physicalCameraCandidates(hint);
             fallbackCandidateIndex = 0;
-            if (startFallbackCandidate(0))
+            if (startFallbackCandidate(static_cast<size_t>(-1)))
             {
                 frame.pixels.clear();
                 std::cout << "capture_mode=molixiu-direct\n"
@@ -1385,12 +1411,14 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             {
                 std::cout << "molixiu_direct_error=capture:0x" << std::hex
                           << static_cast<uint32_t>(failureCode) << std::dec << std::endl;
+                const auto previousCandidate = fallbackCandidateIndex;
+                markFallbackBusy(previousCandidate);
                 stopFallback();
                 child = ChildProcess {};
                 // This camera stopped delivering frames (busy, unplugged, or
                 // reclaimed by another app). Move on to the next physical camera
                 // before falling back to waiting.
-                if (startFallbackCandidate(fallbackCandidateIndex + 1))
+                if (startFallbackCandidate(previousCandidate))
                 {
                     frame.pixels.clear();
                     std::cout << "capture_mode=molixiu-direct\n"
@@ -1402,7 +1430,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 }
             }
             else if (std::chrono::steady_clock::now() - lastDirectFrameAt
-                     > (directSequence == 0 ? std::chrono::seconds(8) : std::chrono::seconds(5)))
+                     > (directSequence == 0 ? std::chrono::seconds(4) : std::chrono::seconds(5)))
             {
                 if (tryNextDirectSource())
                 {
@@ -1412,10 +1440,13 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 else
                 {
                     child = ChildProcess {};
+                    const auto previousCandidate = fallbackCandidateIndex;
+                    // No frame within 4s means this camera is occupied or broken:
+                    // remember that and move to the next physical camera instead of
+                    // blocking every attempt on the same device.
+                    markFallbackBusy(previousCandidate);
                     stopFallback();
-                    // No further source on this camera: try the next physical
-                    // camera instead of reporting a stall straight away.
-                    if (startFallbackCandidate(fallbackCandidateIndex + 1))
+                    if (startFallbackCandidate(previousCandidate))
                     {
                         frame.pixels.clear();
                         std::cout << "capture_mode=molixiu-direct\n"
