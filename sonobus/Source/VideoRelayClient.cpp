@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iterator>
 #include <algorithm>
+#include <vector>
 #include <regex>
 
 #if JUCE_MAC
@@ -399,18 +400,34 @@ void VideoRelayClient::runVideoLoop()
         // selection: the physical camera is often held exclusively by the very app
         // that feeds that virtual output, while reading the virtual camera needs no
         // exclusive access and still shows the picture that app shows.
+        // YY开播 registers more than one virtual camera; the plain one mirrors its
+        // own preview while the "+"/multi variant is a different, often stale
+        // output. Rank the known primaries first so the fallback does not show a
+        // picture that does not match the source application.
+        const auto virtualCameraRank = [](const juce::String& id)
+        {
+            const auto lower = id.toLowerCase();
+            if (lower.contains("yyanchorvcam")) return 0;
+            if (lower.contains("obs virtual camera")) return 1;
+            if (lower.contains("webcastmate")) return 2;
+            return 3;
+        };
         const auto refreshVirtualFallbacks = [&]()
         {
             if (! selectedIsMoLiXiu) return;
-            virtualFallbackIds.clear();
+            std::vector<std::pair<int, juce::String>> ranked;
             for (const auto& device : devices)
             {
                 if (! device.id.startsWith("dshow:")) continue;
                 if (device.id == selectedCamera) continue;
                 if (sonobus::video::isMoLiXiuBridgeCamera(device.id, device.name)) continue;
                 if (! sonobus::video::isKnownVirtualCamera(device.id, device.name)) continue;
-                virtualFallbackIds.addIfNotAlreadyThere(device.id);
+                ranked.emplace_back(virtualCameraRank(device.id), device.id);
             }
+            std::stable_sort(ranked.begin(), ranked.end(),
+                             [](const auto& left, const auto& right) { return left.first < right.first; });
+            virtualFallbackIds.clear();
+            for (const auto& entry : ranked) virtualFallbackIds.addIfNotAlreadyThere(entry.second);
         };
         const auto advanceVirtualFallback = [&]()
         {
