@@ -1138,6 +1138,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
     bool sawDeviceHint = false;
     bool usingHook = false;
     auto fallbackRetryAt = std::chrono::steady_clock::now();
+    auto lastPictureAt = fallbackRetryAt;
     auto lastDirectFrameAt = fallbackRetryAt;
     std::vector<std::wstring> fallbackCandidates;
     size_t fallbackCandidateIndex = 0;
@@ -1288,6 +1289,14 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             std::cout << "SONOBUS_ERROR=unavailable:molixiu-frame-timeout" << std::endl;
             return 3;
         }
+        if (now - lastPictureAt > std::chrono::seconds(20))
+        {
+            // Neither MoLiXiu nor any shared physical camera produced a picture.
+            // Exit so the client can try another source (a virtual camera) rather
+            // than keeping a publisher alive with nothing to send.
+            std::cout << "SONOBUS_ERROR=unavailable:no-picture" << std::endl;
+            return 3;
+        }
         if (mapping == nullptr)
         {
             mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, sonobus::molixiu::kFrameMappingName);
@@ -1361,6 +1370,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             }
             frame = std::move(next);
             lastSequence = frame.header.sequence;
+            lastPictureAt = std::chrono::steady_clock::now();
         }
 
         if (child.process.hProcess && WaitForSingleObject(child.process.hProcess, 0) != WAIT_TIMEOUT)
@@ -1488,6 +1498,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                         offset += written;
                     }
                     lastDirectFrameAt = std::chrono::steady_clock::now();
+                    lastPictureAt = lastDirectFrameAt;
                     ++frames;
                     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - fpsWindow).count();
                     if (elapsed >= 3.0)
