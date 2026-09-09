@@ -119,8 +119,17 @@ double frameRate(const MediaFrameFormat& format)
 
 MediaFrameSourceGroup findGroup(const hstring& groupId)
 {
+    const auto requestedId = std::wstring(groupId.c_str());
     for (const auto& group : MediaFrameSourceGroup::FindAllAsync().get())
+    {
         if (group.Id() == groupId) return group;
+        // A physical camera can expose a different interface GUID as the source-group
+        // identifier than the PnP path persisted by MoLiXiu. Match only the stable
+        // physical device path, never a virtual-camera-only identifier.
+        if (sonobus::molixiu::samePhysicalCameraSourceGroup(requestedId,
+                                                            std::wstring(group.Id().c_str())))
+            return group;
+    }
     return nullptr;
 }
 
@@ -295,8 +304,10 @@ CaptureSession startReaderForSource(CaptureSession& session, size_t sourceIndex)
                            ? session.capture.CreateFrameReaderAsync(session.source).get()
                            : session.capture.CreateFrameReaderAsync(session.source, subtype).get();
         }
-        catch (const hresult_error&)
+        catch (const hresult_error& error)
         {
+            std::cout << "reader_create_error=0x" << std::hex << static_cast<uint32_t>(error.code())
+                      << std::dec << '\n' << std::flush;
             session.reader = nullptr;
             return false;
         }
@@ -1092,6 +1103,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             try
             {
                 startReaderForSource(session, sourceIndex);
+                std::cout << "capture_source_ready=" << sourceIndex << '\n' << std::flush;
                 restartChild(session.mode.width, session.mode.height, session.mode.fps,
                              sonobus::molixiu::kPixelNv12, false);
                 direct = std::move(session);
