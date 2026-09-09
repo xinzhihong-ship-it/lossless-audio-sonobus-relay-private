@@ -154,8 +154,6 @@ private:
     int activeMaxBitrate = 0;
     juce::uint64 sequence = 0;
     juce::String progressBuffer;
-    juce::StringArray virtualFallbackIds;
-    int virtualFallbackIndex = -1;
     bool pairingRejected = false;
     juce::uint32 publisherStartedAt = 0;
     juce::uint32 lastPublisherProgressAt = 0;
