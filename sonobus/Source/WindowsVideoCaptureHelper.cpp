@@ -1089,10 +1089,12 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
     uint32_t childHeight = 0;
     double childFps = 0.0;
     uint32_t childPixel = 0;
-    const auto childMatches = [&](uint32_t width, uint32_t height, double fps, uint32_t pixelFormat)
+    bool childFlip = false;
+    const auto childMatches = [&](uint32_t width, uint32_t height, double fps, uint32_t pixelFormat,
+                                  bool verticalFlip)
     {
         return child.process.hProcess != nullptr && childWidth == width && childHeight == height
-            && childFps == fps && childPixel == pixelFormat;
+            && childFps == fps && childPixel == pixelFormat && childFlip == verticalFlip;
     };
     const auto restartChild = [&](uint32_t width, uint32_t height, double fps, uint32_t pixelFormat,
                                   bool verticalFlip)
@@ -1104,6 +1106,15 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
         childHeight = height;
         childFps = fps;
         childPixel = pixelFormat;
+        childFlip = verticalFlip;
+    };
+    // Keeps the existing encoder alive when only the camera owner changed, so the
+    // periodic hand-back does not restart the publisher every time.
+    const auto restartChildIfNeeded = [&](uint32_t width, uint32_t height, double fps, uint32_t pixelFormat,
+                                          bool verticalFlip)
+    {
+        if (childMatches(width, height, fps, pixelFormat, verticalFlip)) return;
+        restartChild(width, height, fps, pixelFormat, verticalFlip);
     };
 
     uint32_t lastSequence = 0;
@@ -1152,8 +1163,8 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 std::cout << "capture_source_ready=" << sourceIndex << '\n' << std::flush;
                 try
                 {
-                    restartChild(session.mode.width, session.mode.height, session.mode.fps,
-                                 sonobus::molixiu::kPixelNv12, false);
+                    restartChildIfNeeded(session.mode.width, session.mode.height, session.mode.fps,
+                                         sonobus::molixiu::kPixelNv12, false);
                 }
                 catch (const hresult_error& error)
                 {
@@ -1188,8 +1199,8 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             try
             {
                 startReaderForSource(direct, sourceIndex);
-                restartChild(direct.mode.width, direct.mode.height, direct.mode.fps,
-                             sonobus::molixiu::kPixelNv12, false);
+                restartChildIfNeeded(direct.mode.width, direct.mode.height, direct.mode.fps,
+                                     sonobus::molixiu::kPixelNv12, false);
                 directSourceIndex = sourceIndex;
                 directSequence = 0;
                 lastDirectFrameAt = std::chrono::steady_clock::now();
@@ -1276,7 +1287,7 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 std::cout << "molixiu_source=hook" << std::endl;
             }
             const auto fpsValue = next.header.reserved > 0 ? next.header.reserved / 1000.0 : 30.0;
-            if (! childMatches(next.header.width, next.header.height, fpsValue, next.header.pixelFormat))
+            if (! childMatches(next.header.width, next.header.height, fpsValue, next.header.pixelFormat, true))
             {
                 try
                 {
