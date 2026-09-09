@@ -37,6 +37,8 @@ int main()
                  "known virtual DirectShow camera was filtered unexpectedly");
     ok &= expect(devices.size() == 4 && devices[3].id.containsIgnoreCase("yyanchorvcam"),
                  "YY Anchor DirectShow camera was filtered unexpectedly");
+    ok &= expect(devices.size() == 4 && ! sonobus::video::isMoLiXiuBridgeCamera(devices[3].id, devices[3].name),
+                 "YY Anchor fixture was routed to the private MoLiXiu bridge");
     ok &= expect(! sonobus::video::isKnownVirtualCamera("group-id-1", "Integrated Camera"),
                  "physical camera was classified as virtual");
     ok &= expect(sonobus::video::isKnownVirtualCamera("dshow:@device_sw_obs", "OBS Virtual Camera"),
