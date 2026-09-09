@@ -100,6 +100,7 @@ private:
     void readPublisherProgress();
     void logMsg(const juce::String& msg);
     void runVideoLoop();
+    void handleVideoLoopFailure(const juce::String& reason);
     juce::String findFfmpeg() const;
     juce::String findFfmpeg32() const;
     juce::String findWindowsCaptureHelper() const;
@@ -155,8 +156,10 @@ private:
     juce::String progressBuffer;
     bool pairingRejected = false;
     juce::uint32 publisherStartedAt = 0;
+    juce::uint32 lastPublisherProgressAt = 0;
     bool publisherHasFrames = false;
     bool publisherReleaseRequested = false;
+    mutable bool publisherStalled = false;
 
     std::atomic<Status> status { Status::idle };
     std::unique_ptr<juce::ChildProcess> publisher;

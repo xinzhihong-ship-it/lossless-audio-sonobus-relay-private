@@ -1039,6 +1039,33 @@ hstring findSourceGroupByDisplayName(const std::wstring& name)
     return hstring {};
 }
 
+std::vector<std::wstring> physicalCameraCandidates(const MoLiXiuCameraHint& hint)
+{
+    // MoLiXiu's own hint is only a preference. When that camera is busy, held
+    // exclusively by another app, or simply gone, any other physical camera is a
+    // valid source for the real picture. Virtual outputs (OBS/YY/WebcastMate) are
+    // never candidates: they are owned by another capture app and would only
+    // reintroduce the exclusive owner this fallback exists to avoid.
+    std::vector<std::wstring> candidates;
+    if (! hint.device.empty() && ! isVirtualCameraHint(hint.device))
+        candidates.push_back(hint.device);
+    for (const auto& group : MediaFrameSourceGroup::FindAllAsync().get())
+    {
+        bool hasColor = false;
+        for (const auto& info : group.SourceInfos())
+            if (info.SourceKind() == MediaFrameSourceKind::Color) { hasColor = true; break; }
+        if (! hasColor) continue;
+        const auto id = std::wstring(group.Id().c_str());
+        const auto name = std::wstring(group.DisplayName().c_str());
+        if (isVirtualCameraHint(id) || isVirtualCameraHint(name)) continue;
+        bool duplicate = false;
+        for (const auto& existing : candidates)
+            if (sonobus::molixiu::samePhysicalCameraSourceGroup(existing, id)) { duplicate = true; break; }
+        if (! duplicate) candidates.push_back(id);
+    }
+    return candidates;
+}
+
 int publishMoLiXiu(const std::vector<std::wstring>& args)
 {
     const auto ffmpeg = option(args, L"--ffmpeg");
@@ -1099,6 +1126,9 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
     bool sawDeviceHint = false;
     auto fallbackRetryAt = std::chrono::steady_clock::now();
     auto lastDirectFrameAt = fallbackRetryAt;
+    std::vector<std::wstring> fallbackCandidates;
+    size_t fallbackCandidateIndex = 0;
+    auto fallbackReleaseAt = fallbackRetryAt;
 
     const auto stopFallback = [&]()
     {
@@ -1176,6 +1206,40 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
         return false;
     };
 
+    // Tries the remaining physical cameras in order, always through MediaCapture
+    // SharedReadOnly (never an exclusive lease), and reports which one is used.
+    const auto startFallbackCandidate = [&](size_t firstCandidate) -> bool
+    {
+        for (size_t index = firstCandidate; index < fallbackCandidates.size(); ++index)
+        {
+            const auto groupId = findSourceGroupByDisplayName(fallbackCandidates[index]);
+            if (groupId.empty())
+            {
+                std::cout << "molixiu_direct_error=shared:physical-source-not-found" << std::endl;
+                continue;
+            }
+            try
+            {
+                if (! startDirectSession(openSharedCamera(groupId), 0)) continue;
+            }
+            catch (const hresult_error& error)
+            {
+                std::cout << "molixiu_direct_error=shared:0x" << std::hex
+                          << static_cast<uint32_t>(error.code()) << std::dec << std::endl;
+                continue;
+            }
+            fallbackCandidateIndex = index;
+            // Even a shared read blocks applications that request exclusive camera
+            // control, so the camera is handed back periodically (see below).
+            fallbackReleaseAt = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            const auto group = findGroup(groupId);
+            std::cout << "molixiu_camera="
+                      << (group ? cleanField(to_string(group.DisplayName())) : std::string()) << std::endl;
+            return true;
+        }
+        return false;
+    };
+
     for (;;)
     {
         if (parentHandle != nullptr && WaitForSingleObject(parentHandle, 0) == WAIT_OBJECT_0) break;
@@ -1238,40 +1302,22 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                  && std::chrono::steady_clock::now() >= fallbackRetryAt)
         {
             MoLiXiuCameraHint hint;
-            bool started = false;
             if (readMoLiXiuCameraHint(hint))
-            {
                 sawDeviceHint = true;
-                const auto groupId = findSourceGroupByDisplayName(hint.device);
-                if (! groupId.empty())
-                {
-                    try
-                    {
-                        started = startDirectSession(openSharedCamera(groupId), 0);
-                    }
-                    catch (const hresult_error& error)
-                    {
-                        std::cout << "molixiu_direct_error=shared:0x" << std::hex
-                                  << static_cast<uint32_t>(error.code()) << std::dec << std::endl;
-                    }
-                }
-                else
-                {
-                    std::cout << "molixiu_direct_error=shared:physical-source-not-found" << std::endl;
-                }
-                if (started)
-                {
-                    frame.pixels.clear();
-                    std::cout << "capture_mode=molixiu-direct\n"
-                              << "molixiu_source=shared-readonly" << std::endl;
-                }
+            else
+                std::cout << "molixiu_direct_error=shared:no-physical-device-hint" << std::endl;
+            fallbackCandidates = physicalCameraCandidates(hint);
+            fallbackCandidateIndex = 0;
+            if (startFallbackCandidate(0))
+            {
+                frame.pixels.clear();
+                std::cout << "capture_mode=molixiu-direct\n"
+                          << "molixiu_source=shared-readonly" << std::endl;
             }
             else
             {
-                std::cout << "molixiu_direct_error=shared:no-physical-device-hint" << std::endl;
-            }
-            if (! started)
                 fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            }
         }
 
         if (child.process.hProcess && WaitForSingleObject(child.process.hProcess, 0) != WAIT_TIMEOUT)
@@ -1306,6 +1352,17 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
             // MediaCapture was initialized on this STA thread, so its frame
             // callbacks only arrive while window messages are pumped.
             pumpStaCallbacks();
+            if (std::chrono::steady_clock::now() >= fallbackReleaseAt)
+            {
+                // Hand the camera back for a short window: shared readers still
+                // block apps that ask for exclusive control (MoLiXiu, meeting
+                // software, ...). Frames resume automatically afterwards, and hook
+                // frames keep priority if MoLiXiu starts feeding again meanwhile.
+                stopFallback();
+                fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                std::cout << "molixiu_source=released-for-other-apps" << std::endl;
+                continue;
+            }
             bool failed = false;
             HRESULT failureCode = S_OK;
             {
@@ -1319,7 +1376,19 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                           << static_cast<uint32_t>(failureCode) << std::dec << std::endl;
                 stopFallback();
                 child = ChildProcess {};
-                fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                // This camera stopped delivering frames (busy, unplugged, or
+                // reclaimed by another app). Move on to the next physical camera
+                // before falling back to waiting.
+                if (startFallbackCandidate(fallbackCandidateIndex + 1))
+                {
+                    frame.pixels.clear();
+                    std::cout << "capture_mode=molixiu-direct\n"
+                              << "molixiu_source=shared-readonly" << std::endl;
+                }
+                else
+                {
+                    fallbackRetryAt = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                }
             }
             else if (std::chrono::steady_clock::now() - lastDirectFrameAt
                      > (directSequence == 0 ? std::chrono::seconds(8) : std::chrono::seconds(5)))
@@ -1331,11 +1400,24 @@ int publishMoLiXiu(const std::vector<std::wstring>& args)
                 }
                 else
                 {
-                    // Never keep reporting a live publisher after a shared reader
-                    // has stalled. Returning releases the reader and FFmpeg, so the
-                    // next retry can observe a newly available owner/source.
-                    std::cout << "SONOBUS_ERROR=unavailable:frame-timeout:molixiu-shared-readonly" << std::endl;
-                    return 3;
+                    child = ChildProcess {};
+                    stopFallback();
+                    // No further source on this camera: try the next physical
+                    // camera instead of reporting a stall straight away.
+                    if (startFallbackCandidate(fallbackCandidateIndex + 1))
+                    {
+                        frame.pixels.clear();
+                        std::cout << "capture_mode=molixiu-direct\n"
+                                  << "molixiu_source=shared-readonly" << std::endl;
+                    }
+                    else
+                    {
+                        // Never keep reporting a live publisher after a shared reader
+                        // has stalled. Returning releases the reader and FFmpeg, so the
+                        // next retry can observe a newly available owner/source.
+                        std::cout << "SONOBUS_ERROR=unavailable:frame-timeout:molixiu-shared-readonly" << std::endl;
+                        return 3;
+                    }
                 }
             }
             else if (direct.state->sequence != directSequence)

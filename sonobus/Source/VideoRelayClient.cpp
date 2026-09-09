@@ -552,10 +552,13 @@ void VideoRelayClient::runVideoLoop()
             readPublisherProgress();
             if (publisherNeedsRelease())
             {
+                const auto stalled = publisherStalled;
                 stopPublisher();
                 runningMode = {};
                 nextPublisherAttemptMs = juce::Time::getMillisecondCounterHiRes() + 5000.0;
-                setStatus(Status::cameraUnavailable, sonobus::video::translated(u8"摄像头未输出有效视频帧或被其他程序占用，已释放摄像头"));
+                setStatus(Status::cameraUnavailable, stalled
+                    ? sonobus::video::translated(u8"采集已停止输出（摄像头被其他程序取回或网络中断），正在自动重连")
+                    : sonobus::video::translated(u8"摄像头未输出有效视频帧或被其他程序占用，已释放摄像头"));
             }
             wait(juce::jmin(100, sleepMs - waited));
         }
@@ -566,11 +569,32 @@ void VideoRelayClient::runVideoLoop()
     catch (const std::exception& e)
     {
         logMsg("CRASH std::exception: " + juce::String(e.what()));
+        handleVideoLoopFailure(sonobus::video::translated(u8"视频发送线程异常中止：") + juce::String(e.what()));
     }
     catch (...)
     {
         logMsg("CRASH unknown exception");
+        handleVideoLoopFailure(sonobus::video::translated(u8"视频发送线程异常中止"));
     }
+}
+
+void VideoRelayClient::handleVideoLoopFailure(const juce::String& reason)
+{
+    // The loop is gone, so nothing will poll control or restart the publisher.
+    // Release the camera and report a real error instead of leaving the admin
+    // page showing a stale "capturing" state.
+    stopPublisher();
+    {
+        const juce::ScopedLock lock(stateLock);
+        activeMode = {};
+        captureMode = {};
+        captureFps = 0.0;
+        actualFps = 0.0;
+        actualBitrate = 0;
+        publisherProgressEnabled = false;
+        publisherHasFrames = false;
+    }
+    setStatus(Status::error, reason);
 }
 void VideoRelayClient::logMsg(const juce::String& msg)
 {
@@ -1209,6 +1233,8 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             publisherStartedAt = juce::Time::getMillisecondCounter();
             publisherHasFrames = false;
             publisherReleaseRequested = false;
+            publisherStalled = false;
+            lastPublisherProgressAt = publisherStartedAt;
             lastError.clear();
         }
         return true;
@@ -1355,6 +1381,8 @@ void VideoRelayClient::stopPublisher()
     publisherStartedAt = 0;
     publisherHasFrames = false;
     publisherReleaseRequested = false;
+    publisherStalled = false;
+    lastPublisherProgressAt = 0;
 }
 
 void VideoRelayClient::readPublisherProgress()
@@ -1362,12 +1390,16 @@ void VideoRelayClient::readPublisherProgress()
     const juce::ScopedLock lock(stateLock);
     if (publisher == nullptr || ! publisherProgressEnabled) return;
     char buffer[4096];
+    bool received = false;
     for (;;)
     {
         const auto count = publisher->readProcessOutput(buffer, static_cast<int>(sizeof(buffer)));
         if (count <= 0) break;
         progressBuffer += juce::String::fromUTF8(buffer, count);
+        received = true;
     }
+    // Any progress output proves the helper/encoder pipeline is still alive.
+    if (received) lastPublisherProgressAt = juce::Time::getMillisecondCounter();
     for (;;)
     {
         const auto newline = progressBuffer.indexOfChar('\n');
@@ -1403,6 +1435,13 @@ void VideoRelayClient::readPublisherProgress()
             const auto value = line.fromFirstOccurrenceOf("=", false, false).retainCharacters("0123456789.");
             if (value.isNotEmpty()) actualBitrate = juce::roundToInt(value.getDoubleValue() * 1000.0);
         }
+        if (line.startsWith("molixiu_camera="))
+        {
+            // The MoLiXiu fallback picks whichever physical camera is free, so the
+            // administrator must see the camera actually in use, not the selection.
+            const auto name = line.fromFirstOccurrenceOf("=", false, false).trim();
+            if (name.isNotEmpty()) activeCamera = name;
+        }
         if (line.startsWith("SONOBUS_ERROR=")) lastError = cameraFailureMessage(line);
         else if (sonobus::video::classifyCameraFailure(line) == sonobus::video::CameraFailure::busy)
         {
@@ -1428,10 +1467,20 @@ bool VideoRelayClient::publisherNeedsRelease() const
     const juce::ScopedLock lock(stateLock);
     if (publisher == nullptr || ! publisher->isRunning()) return false;
     if (publisherReleaseRequested) return true;
+    const auto now = juce::Time::getMillisecondCounter();
     const auto firstFrameTimeoutMs = activeCameraId.startsWith("dshow:") ? 5000u : 35000u;
-    return publisherStartedAt != 0
+    if (publisherStartedAt != 0
         && ! publisherHasFrames
-        && juce::Time::getMillisecondCounter() - publisherStartedAt >= firstFrameTimeoutMs;
+        && now - publisherStartedAt >= firstFrameTimeoutMs) return true;
+    // A live publisher keeps emitting progress lines. Silence means the helper is
+    // blocked (shared camera reclaimed by another app, RTSP write stall, encoder
+    // wedged), so recycle it instead of reporting a stale "capturing" state.
+    if (publisherHasFrames && lastPublisherProgressAt != 0 && now - lastPublisherProgressAt >= 15000u)
+    {
+        publisherStalled = true;
+        return true;
+    }
+    return false;
 }
 
 juce::String VideoRelayClient::findFfmpeg() const
