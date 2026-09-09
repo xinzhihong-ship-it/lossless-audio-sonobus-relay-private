@@ -635,7 +635,7 @@ ChildProcess spawnChildProcess(const std::vector<std::wstring>& arguments)
     {
         const auto error = GetLastError();
         std::cout << "ffmpeg_spawn_stage=create-process:0x" << std::hex
-                  << static_cast<uint32_t>(error) << std::dec << " path=" << arguments.front() << std::endl;
+                  << static_cast<uint32_t>(error) << std::dec << std::endl;
         CloseHandle(inputRead);
         throw hresult_error(HRESULT_FROM_WIN32(error));
     }
