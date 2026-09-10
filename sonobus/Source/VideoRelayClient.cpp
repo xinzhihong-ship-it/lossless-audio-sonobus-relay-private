@@ -416,8 +416,15 @@ void VideoRelayClient::runVideoLoop()
         {
             if (! selectedIsMoLiXiu) return;
             // MoLiXiu captures a virtual camera itself while it runs; opening that
-            // device here would take the source away from the application.
-            if (sonobus::video::isMoLiXiuRunning()) return;
+            // device here would take the source away from the application. The
+            // list must also be dropped, otherwise an already selected virtual
+            // camera would stay in use and return black frames once MoLiXiu owns it.
+            if (sonobus::video::isMoLiXiuRunning())
+            {
+                virtualFallbackIds.clear();
+                virtualFallbackIndex = -1;
+                return;
+            }
             std::vector<std::pair<int, juce::String>> ranked;
             for (const auto& device : devices)
             {
