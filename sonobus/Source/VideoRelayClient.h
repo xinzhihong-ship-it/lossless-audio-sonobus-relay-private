@@ -58,19 +58,7 @@ private:
         bool operator!=(const CameraMode& other) const noexcept { return !(*this == other); }
     };
 
-    struct DesiredState
-    {
-        bool enabled = false;
-        juce::String cameraDeviceId;
-        juce::String ingestPath;
-        juce::String publishUser;
-        juce::String publishNonce;
-        int rtspPort = 19092;
-        int maxHeight = 0;
-        double maxFps = 0.0;
-        int maxBitrate = 0;
-        juce::String revision;
-    };
+    using DesiredState = sonobus::video::PublisherControl;
 
     void run() override;
     bool pollControl(DesiredState& desired, int& pollAfterMs);
@@ -154,8 +142,6 @@ private:
     int activeMaxBitrate = 0;
     juce::uint64 sequence = 0;
     juce::String progressBuffer;
-    juce::StringArray virtualFallbackIds;
-    int virtualFallbackIndex = -1;
     bool pairingRejected = false;
     juce::uint32 publisherStartedAt = 0;
     juce::uint32 lastPublisherProgressAt = 0;

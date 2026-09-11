@@ -7,6 +7,51 @@
 
 namespace sonobus::video
 {
+// Administrator state used to decide whether a new publisher launch was requested.
+// The enabled flag is handled by the caller, which resets the attempt when the
+// administrator disables video.
+struct PublisherControl
+{
+    bool enabled = false;
+    juce::String cameraDeviceId, ingestPath, publishUser, publishNonce;
+    int rtspPort = 19092;
+    int maxHeight = 0;
+    double maxFps = 0.0;
+    int maxBitrate = 0;
+    juce::String revision;
+
+    bool sameLaunchAs(const PublisherControl& other) const
+    {
+        return cameraDeviceId == other.cameraDeviceId && ingestPath == other.ingestPath
+            && publishUser == other.publishUser && publishNonce == other.publishNonce
+            && rtspPort == other.rtspPort && maxHeight == other.maxHeight
+            && maxFps == other.maxFps && maxBitrate == other.maxBitrate;
+    }
+};
+
+struct PublisherAttempt
+{
+    PublisherControl control;
+    bool recorded = false;
+
+    bool changed(const PublisherControl& next) const
+    {
+        return ! recorded || next.revision != control.revision || ! next.sameLaunchAs(control);
+    }
+
+    void record(const PublisherControl& next)
+    {
+        control = next;
+        recorded = true;
+    }
+
+    void reset()
+    {
+        control = {};
+        recorded = false;
+    }
+};
+
 struct CameraDevice
 {
     juce::String id;
@@ -41,9 +86,13 @@ inline juce::String translated(const char* text)
 }
 
 bool isKnownVirtualCamera(const juce::String& id, const juce::String& name);
-// True only for devices intended for the private molixiu.exe frame bridge;
-// known YYAnchor DirectShow filters stay on the ordinary DirectShow path.
+// Always false for case-insensitive dshow: IDs, before any friendly-name heuristics.
+// Non-DirectShow bridge markers retain their existing classification; callers must
+// separately validate virtual-camera eligibility and private molixiu.exe compatibility.
 bool isMoLiXiuBridgeCamera(const juce::String& id, const juce::String& name);
+// Preserve an explicitly selected camera; only the private MoLiXiu selection uses
+// the synthetic bridge ID, never an unrelated enumerated virtual camera.
+juce::String captureCameraForSelection(const juce::String& selectedId, bool selectedIsMoLiXiu);
 // True while molixiu.exe is running. The relay must then leave the virtual
 // cameras alone: MoLiXiu captures one of them itself, and a DirectShow open by
 // the relay would take that source away from the application.

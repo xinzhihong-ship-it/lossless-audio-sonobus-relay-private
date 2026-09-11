@@ -283,8 +283,6 @@ void VideoRelayClient::stop()
         actualBitrate = 0;
         progressBuffer.clear();
         cameraError.clear();
-        virtualFallbackIds.clear();
-        virtualFallbackIndex = -1;
         enrollmentKey.reset();
         enrollmentHandler = {};
         pairingRejected = false;
@@ -321,7 +319,7 @@ void VideoRelayClient::runVideoLoop()
     }
     DesiredState runningDesired;
     CameraMode runningMode;
-    juce::String lastAttemptRevision;
+    sonobus::video::PublisherAttempt lastAttempt;
     double nextPublisherAttemptMs = 0.0;
     double nextDeviceRefreshMs = 0.0;
     double nextMoLiXiuAttachMs = 0.0;
@@ -395,58 +393,6 @@ void VideoRelayClient::runVideoLoop()
         if (! selectedIsMoLiXiu)
             selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
 #endif
-#if JUCE_WINDOWS
-        // A virtual camera (YY/OBS/...) is the last-resort source for a MoLiXiu
-        // selection: the physical camera is often held exclusively by the very app
-        // that feeds that virtual output, while reading the virtual camera needs no
-        // exclusive access and still shows the picture that app shows.
-        // YY开播 registers more than one virtual camera; the plain one mirrors its
-        // own preview while the "+"/multi variant is a different, often stale
-        // output. Rank the known primaries first so the fallback does not show a
-        // picture that does not match the source application.
-        const auto virtualCameraRank = [](const juce::String& id)
-        {
-            const auto lower = id.toLowerCase();
-            if (lower.contains("yyanchorvcam")) return 0;
-            if (lower.contains("obs virtual camera")) return 1;
-            if (lower.contains("webcastmate")) return 2;
-            return 3;
-        };
-        const auto refreshVirtualFallbacks = [&]()
-        {
-            if (! selectedIsMoLiXiu) return;
-            // MoLiXiu captures a virtual camera itself while it runs; opening that
-            // device here would take the source away from the application. The
-            // list must also be dropped, otherwise an already selected virtual
-            // camera would stay in use and return black frames once MoLiXiu owns it.
-            if (sonobus::video::isMoLiXiuRunning())
-            {
-                virtualFallbackIds.clear();
-                virtualFallbackIndex = -1;
-                return;
-            }
-            std::vector<std::pair<int, juce::String>> ranked;
-            for (const auto& device : devices)
-            {
-                if (! device.id.startsWith("dshow:")) continue;
-                if (device.id == selectedCamera) continue;
-                if (sonobus::video::isMoLiXiuBridgeCamera(device.id, device.name)) continue;
-                if (! sonobus::video::isKnownVirtualCamera(device.id, device.name)) continue;
-                ranked.emplace_back(virtualCameraRank(device.id), device.id);
-            }
-            std::stable_sort(ranked.begin(), ranked.end(),
-                             [](const auto& left, const auto& right) { return left.first < right.first; });
-            virtualFallbackIds.clear();
-            for (const auto& entry : ranked) virtualFallbackIds.addIfNotAlreadyThere(entry.second);
-        };
-        const auto advanceVirtualFallback = [&]()
-        {
-            if (! selectedIsMoLiXiu || virtualFallbackIds.isEmpty()) return;
-            virtualFallbackIndex = virtualFallbackIndex + 1 < virtualFallbackIds.size()
-                                 ? virtualFallbackIndex + 1 : -1;
-            logMsg("virtual fallback index=" + juce::String(virtualFallbackIndex));
-        };
-#endif
         bool selectedMissing = desired.cameraDeviceId.isNotEmpty();
         for (const auto& device : devices)
             if (device.id == desired.cameraDeviceId) selectedMissing = false;
@@ -479,7 +425,7 @@ void VideoRelayClient::runVideoLoop()
             stopPublisher();
             runningDesired = desired;
             runningMode = {};
-            lastAttemptRevision.clear();
+            lastAttempt.reset();
             nextPublisherAttemptMs = 0.0;
             setStatus(Status::waitingForAdmin);
         }
@@ -504,26 +450,13 @@ void VideoRelayClient::runVideoLoop()
             }
 #endif
 
-            auto captureCamera = selectedCamera;
-#if JUCE_WINDOWS
-            if (selectedIsMoLiXiu)
-            {
-                refreshVirtualFallbacks();
-                captureCamera = virtualFallbackIndex >= 0 && virtualFallbackIndex < virtualFallbackIds.size()
-                              ? virtualFallbackIds[virtualFallbackIndex]
-                              : juce::String("molixiu-hook");
-            }
-#endif
+            const auto captureCamera = selectedIsMoLiXiu ? juce::String("molixiu-hook") : selectedCamera;
 
             bool cameraAvailable = false;
 #if JUCE_WINDOWS
             if (selectedIsMoLiXiu)
             {
-                if (captureCamera == "molixiu-hook")
-                    cameraAvailable = findWindowsMoLiXiuBridge().isNotEmpty();
-                else
-                    for (const auto& device : devices)
-                        if (device.id == captureCamera) cameraAvailable = true;
+                cameraAvailable = findWindowsMoLiXiuBridge().isNotEmpty();
             }
             else
 #endif
@@ -538,15 +471,14 @@ void VideoRelayClient::runVideoLoop()
             }
             else
             {
-                const bool desiredChanged = captureCamera != runningDesired.cameraDeviceId
-                                         || desired.ingestPath != runningDesired.ingestPath
-                                         || desired.publishNonce != runningDesired.publishNonce
-                                         || desired.publishUser != runningDesired.publishUser
-                                         || desired.rtspPort != runningDesired.rtspPort
-                                         || desired.maxHeight != runningDesired.maxHeight
-                                         || desired.maxFps != runningDesired.maxFps
-                                         || desired.maxBitrate != runningDesired.maxBitrate;
-                const bool attemptChanged = desired.revision != lastAttemptRevision;
+                auto launchDesired = desired;
+                launchDesired.cameraDeviceId = captureCamera;
+                const bool desiredChanged = launchDesired.revision != runningDesired.revision
+                                         || ! launchDesired.sameLaunchAs(runningDesired);
+                // Keep the administrator's original device in the retry identity. A
+                // MoLiXiu selection launches as molixiu-hook, but changing the selected
+                // authorization must still count as a new attempt.
+                const bool attemptChanged = lastAttempt.changed(desired);
                 bool hasPublisher = false;
                 bool publisherRunning = false;
                 {
@@ -558,9 +490,6 @@ void VideoRelayClient::runVideoLoop()
                 {
                     readPublisherProgress();
                     stopPublisher();
-#if JUCE_WINDOWS
-                    advanceVirtualFallback();
-#endif
                     runningMode = {};
                     nextPublisherAttemptMs = nowHi + 5000.0;
                     setStatus(Status::error, lastError.isNotEmpty() ? lastError : sonobus::video::translated(u8"H.264 编码进程已退出"));
@@ -569,13 +498,14 @@ void VideoRelayClient::runVideoLoop()
                 // Do not steal a busy camera. DirectShow virtual cameras can show
                 // their own modal busy dialog on every open, so a failed virtual
                 // camera open is one-shot until the administrator changes state.
-                const bool retryDue = ! captureCamera.startsWith("dshow:")
-                                   && ! hasPublisher && desired.revision == lastAttemptRevision
+                const bool retryDue = ! captureCamera.startsWithIgnoreCase("dshow:")
+                                   && ! hasPublisher && ! attemptChanged
                                    && nowHi >= nextPublisherAttemptMs;
-                if ((! hasPublisher || desiredChanged) && (attemptChanged || desiredChanged || retryDue))
+                if ((! hasPublisher || desiredChanged || attemptChanged) && (attemptChanged || retryDue))
                 {
                     stopPublisher();
-                    lastAttemptRevision = desired.revision;
+                    // Record before mode discovery: failure consumes this authorization too.
+                    lastAttempt.record(desired);
                     nextPublisherAttemptMs = nowHi + 5000.0;
                     setStatus(Status::startingCamera);
                     auto mode = selectedIsMoLiXiu ? CameraMode { 1280, 720, 30.0 }
@@ -588,10 +518,6 @@ void VideoRelayClient::runVideoLoop()
                     }
                     else
                     {
-                        auto launchDesired = desired;
-                        // Keep MoLiXiu's own virtual output untouched; SonoBus consumes the
-                        // private frame bridge populated from its internal source callback.
-                        launchDesired.cameraDeviceId = captureCamera;
                         if (startPublisher(ffmpegPath, devices, launchDesired, mode))
                         {
                             runningDesired = launchDesired;
@@ -604,9 +530,6 @@ void VideoRelayClient::runVideoLoop()
                         else
                         {
                             runningMode = {};
-#if JUCE_WINDOWS
-                            advanceVirtualFallback();
-#endif
                             setStatus(Status::cameraUnavailable, lastError.isNotEmpty() ? lastError
                                 : sonobus::video::translated(u8"无法启动 H.264 硬件编码"));
                         }
@@ -626,12 +549,9 @@ void VideoRelayClient::runVideoLoop()
             {
                 const auto stalled = publisherStalled;
                 stopPublisher();
-#if JUCE_WINDOWS
-                advanceVirtualFallback();
-#endif
                 runningMode = {};
                 nextPublisherAttemptMs = juce::Time::getMillisecondCounterHiRes() + 5000.0;
-                setStatus(Status::cameraUnavailable, stalled
+                setStatus(Status::cameraUnavailable, stalled && ! runningDesired.cameraDeviceId.startsWithIgnoreCase("dshow:")
                     ? sonobus::video::translated(u8"采集已停止输出（摄像头被其他程序取回或网络中断），正在自动重连")
                     : sonobus::video::translated(u8"摄像头未输出有效视频帧或被其他程序占用，已释放摄像头"));
             }
@@ -952,7 +872,7 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
                 if (existing.id != device.id) continue;
                 // If a filter is visible to both registrations, prefer the x86
                 // runtime because the legacy virtual-camera DLL is x86 in-process.
-                if (device.id.startsWith("dshow:") && runtimePath != ffmpegPath)
+                if (device.id.startsWithIgnoreCase("dshow:") && runtimePath != ffmpegPath)
                     existing.captureFfmpegPath = runtimePath;
                 duplicate = true;
                 break;
@@ -1010,7 +930,7 @@ juce::Array<VideoRelayClient::CameraMode> VideoRelayClient::getPreferredCameraMo
 {
     juce::Array<CameraMode> result;
 #if JUCE_WINDOWS
-    if (cameraDeviceId.startsWith("dshow:"))
+    if (cameraDeviceId.startsWithIgnoreCase("dshow:"))
     {
         // Do not probe a virtual camera separately: YY/OBS may reject the
         // second DirectShow graph and display its own busy dialog. The single
@@ -1080,7 +1000,7 @@ VideoRelayClient::CameraMode VideoRelayClient::findPreferredCameraMode(const juc
                                                                     const juce::String& cameraDeviceId)
 {
 #if JUCE_WINDOWS
-    if (cameraDeviceId.startsWith("dshow:"))
+    if (cameraDeviceId.startsWithIgnoreCase("dshow:"))
     {
         juce::String modeError;
         const auto modes = getPreferredCameraModes(ffmpegPath, cameraDeviceId, modeError);
@@ -1226,7 +1146,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     // Only known virtual filters may use DirectShow. A physical camera that happens
     // to be enumerated by DirectShow must stay on the helper's SharedReadOnly path;
     // otherwise this branch would create the exact exclusive-owner conflict we avoid.
-    const auto dshowOnly = desired.cameraDeviceId.startsWith("dshow:");
+    const auto dshowOnly = desired.cameraDeviceId.startsWithIgnoreCase("dshow:");
     bool knownVirtualDshow = false;
 #if JUCE_WINDOWS
     if (dshowOnly)
@@ -1324,7 +1244,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         juce::String dshowDevice;
         for (const auto& device : devices)
             if (device.id == desired.cameraDeviceId)
-                dshowDevice = desired.cameraDeviceId.fromFirstOccurrenceOf("dshow:", false, false);
+                dshowDevice = desired.cameraDeviceId.substring(6);
         if (dshowDevice.isNotEmpty())
         {
             auto process = std::make_unique<juce::ChildProcess>();
@@ -1543,7 +1463,7 @@ bool VideoRelayClient::publisherNeedsRelease() const
     if (publisher == nullptr || ! publisher->isRunning()) return false;
     if (publisherReleaseRequested) return true;
     const auto now = juce::Time::getMillisecondCounter();
-    const auto firstFrameTimeoutMs = activeCameraId.startsWith("dshow:") ? 5000u : 35000u;
+    const auto firstFrameTimeoutMs = activeCameraId.startsWithIgnoreCase("dshow:") ? 5000u : 35000u;
     if (publisherStartedAt != 0
         && ! publisherHasFrames
         && now - publisherStartedAt >= firstFrameTimeoutMs) return true;

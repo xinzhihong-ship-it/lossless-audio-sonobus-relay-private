@@ -35,9 +35,10 @@ bool isKnownVirtualCamera(const juce::String& id, const juce::String& name)
 
 bool isMoLiXiuBridgeCamera(const juce::String& id, const juce::String& name)
 {
-    // YYAnchor exposes a normal DirectShow filter. The private bridge is only
-    // valid for a compatible molixiu.exe host; the device name alone must not
-    // silently redirect YYAnchor to --publish-molixiu.
+    // Reject DirectShow IDs before name heuristics can rewrite them to molixiu-hook.
+    // This does not grant permission to open a device; virtual filtering is separate.
+    if (id.startsWithIgnoreCase("dshow:")) return false;
+
     const auto value = id + " " + name;
     return ! value.containsIgnoreCase("yyanchorvcam")
         && ! value.containsIgnoreCase("yyanchormulvcam")
@@ -46,6 +47,11 @@ bool isMoLiXiuBridgeCamera(const juce::String& id, const juce::String& name)
             || value.containsIgnoreCase("ishow")
             || value.contains(u8"YY开播")
             || value.contains(u8"魔力秀"));
+}
+
+juce::String captureCameraForSelection(const juce::String& selectedId, bool selectedIsMoLiXiu)
+{
+    return selectedIsMoLiXiu ? juce::String("molixiu-hook") : selectedId;
 }
 
 juce::Array<CameraDevice> parseWindowsCameraDevices(const juce::String& output)
@@ -57,7 +63,7 @@ juce::Array<CameraDevice> parseWindowsCameraDevices(const juce::String& output)
         if (values.size() >= 3 && values[1].isNotEmpty() && values[2].isNotEmpty()
             // A physical camera must stay on the MediaCapture SharedReadOnly path.
             // Keep DirectShow entries only when they are recognisable virtual filters.
-            && (! values[1].startsWith("dshow:") || isKnownVirtualCamera(values[1], values[2])))
+            && (! values[1].startsWithIgnoreCase("dshow:") || isKnownVirtualCamera(values[1], values[2])))
             devices.add({ values[1], values[2] });
     }
     return devices;

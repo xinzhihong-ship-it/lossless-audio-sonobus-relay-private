@@ -52,10 +52,38 @@ int main()
                  "YY Anchor multi-client camera was routed to the private MoLiXiu bridge");
     ok &= expect(! sonobus::video::isMoLiXiuBridgeCamera("dshow:@device_sw_yyanchormulcam", "魔力秀"),
                  "YY Anchor multi-client camera alias was routed to the private MoLiXiu bridge");
+    const juce::String dshowIds[] {
+        "dshow:@device_sw_new", "DSHOW:@device_sw_new", "DsHoW:@device_sw_new",
+        "dshow:@device_sw_molixiu", "dshow:@device_sw_ishow"
+    };
+    const juce::String bridgeNames[] {
+        {}, "MoLiXiu", "iShow", juce::String::fromUTF8(u8"魔力秀"), juce::String::fromUTF8(u8"YY开播")
+    };
+    for (const auto& id : dshowIds)
+        for (const auto& name : bridgeNames)
+            ok &= expect(! sonobus::video::isMoLiXiuBridgeCamera(id, name),
+                         "DirectShow ID must never select the private bridge, regardless of name or case");
+
+    const auto caseVariantDevices = sonobus::video::parseWindowsCameraDevices(
+        "SONOBUS_CAMERA\tDSHOW:@device_sw_physical\tIntegrated Camera\n"
+        "SONOBUS_CAMERA\tDsHoW:@device_sw_obs\tOBS Virtual Camera\n");
+    ok &= expect(caseVariantDevices.size() == 1
+                     && caseVariantDevices[0].id == "DsHoW:@device_sw_obs",
+                 "case-variant DirectShow IDs must filter physical devices and preserve virtual selectors exactly");
+
+    const auto unknownVirtual = sonobus::video::parseWindowsCameraDevices(juce::String::fromUTF8(
+        "SONOBUS_CAMERA\tdshow:@device_sw_new\t魔力秀 Virtual Camera\n"));
+    ok &= expect(unknownVirtual.size() == 1 && unknownVirtual[0].id == "dshow:@device_sw_new"
+                     && ! sonobus::video::isMoLiXiuBridgeCamera(unknownVirtual[0].id, unknownVirtual[0].name),
+                 "virtual-looking DirectShow entry must remain enumerable without selecting the private bridge");
     ok &= expect(sonobus::video::isMoLiXiuBridgeCamera("molixiu-camera", {}),
                  "MoLiXiu bridge camera marker was not recognized");
     ok &= expect(sonobus::video::isMoLiXiuBridgeCamera("ishow-camera", {}),
                  "iShow bridge camera marker was not recognized");
+    ok &= expect(sonobus::video::captureCameraForSelection("dshow:yyanchor", false) == "dshow:yyanchor",
+                 "explicit virtual camera selection was replaced unexpectedly");
+    ok &= expect(sonobus::video::captureCameraForSelection("molixiu-camera", true) == "molixiu-hook",
+                 "MoLiXiu selection did not use the private bridge");
     ok &= expect(devices.size() > 0 && devices[0].name == "Integrated Camera", "friendly camera name was lost");
     ok &= expect(modes.size() == 3 && modes[0].fps >= 59.0 && modes[1].fps == 30.0 && modes[2].fps == 15.0,
                  "helper protocol did not preserve real source FPS modes or accepted an invalid mode");
@@ -97,5 +125,29 @@ int main()
     ok &= expect(! sonobus::molixiu::samePhysicalCameraSourceGroup(
                      molixiuHint, LR"(\\?\USB#VID_046D&PID_0825#other#{e5323777-f976-4f5b-b94699c46e444}\GLOBAL)"),
                  "different physical camera paths were treated as the same source group");
+    sonobus::video::PublisherAttempt attempt;
+    sonobus::video::PublisherControl control;
+    control.enabled = true;
+    control.cameraDeviceId = "DSHOW:camera-A";
+    control.revision = "1";
+    ok &= expect(attempt.changed(control), "first authorization must permit an attempt");
+    attempt.record(control); // Recorded before mode discovery or process start, even if either fails.
+    for (int poll = 0; poll < 5; ++poll)
+        ok &= expect(! attempt.changed(control), "failed/ended publisher must not reopen on identical polls");
+    control.cameraDeviceId = "dshow:camera-B";
+    ok &= expect(attempt.changed(control), "A to B must permit a new attempt even with the same revision");
+    attempt.record(control);
+    ok &= expect(! attempt.changed(control), "failed B must not compare against the last successful A");
+    control.revision = "2";
+    ok &= expect(attempt.changed(control), "new admin revision must unlock an attempt");
+    attempt.record(control);
+    control.maxHeight = 720;
+    ok &= expect(attempt.changed(control), "new output settings must unlock an attempt");
+    attempt.record(control);
+    control.publishNonce = "new-nonce";
+    ok &= expect(attempt.changed(control), "new publishing authorization must unlock an attempt");
+    attempt.record(control);
+    attempt.reset(); // Disabled by administrator.
+    ok &= expect(attempt.changed(control), "disable then re-enable must unlock the same selection");
     return ok ? 0 : 1;
 }
