@@ -70,6 +70,22 @@ int main()
     ok &= expect(caseVariantDevices.size() == 1
                      && caseVariantDevices[0].id == "DsHoW:@device_sw_obs",
                  "case-variant DirectShow IDs must filter physical devices and preserve virtual selectors exactly");
+    ok &= expect(sonobus::video::sameCameraDeviceId(
+                     "dshow:@device_sw_{ABC123}\\\\OBSVirtualCamera",
+                     "DSHOW:@DEVICE_SW_{abc123}\\\\obsvIRTUALcamera"),
+                 "DirectShow selector matching must ignore case across the complete device ID");
+    ok &= expect(! sonobus::video::sameCameraDeviceId(
+                      "dshow:@device_sw_{ABC123}\\\\OBSVirtualCamera",
+                      "dshow:@device_sw_{ABC124}\\\\OBSVirtualCamera"),
+                 "DirectShow selector matching must remain exact apart from case");
+    const auto selectorDevices = sonobus::video::parseWindowsCameraDevices(
+        "SONOBUS_CAMERA\tdshow:@device_sw_{ABC123}\\OBSVirtualCamera\tOBS Virtual Camera\n");
+    ok &= expect(sonobus::video::findCameraDeviceIndex(
+                     selectorDevices, "DSHOW:@DEVICE_SW_{abc123}\\obsvIRTUALcamera") == 0,
+                 "case-variant persisted selector did not resolve to the enumerated camera");
+    ok &= expect(sonobus::video::findCameraDeviceIndex(
+                     selectorDevices, "dshow:@device_sw_{ABC124}\\OBSVirtualCamera") < 0,
+                 "different DirectShow selector was matched by a case-insensitive lookup");
 
     const auto unknownVirtual = sonobus::video::parseWindowsCameraDevices(juce::String::fromUTF8(
         "SONOBUS_CAMERA\tdshow:@device_sw_new\t魔力秀 Virtual Camera\n"));
@@ -134,6 +150,8 @@ int main()
     attempt.record(control); // Recorded before mode discovery or process start, even if either fails.
     for (int poll = 0; poll < 5; ++poll)
         ok &= expect(! attempt.changed(control), "failed/ended publisher must not reopen on identical polls");
+    control.cameraDeviceId = "dshow:CAMERA-a";
+    ok &= expect(! attempt.changed(control), "case-only DirectShow selector changes must not reopen the same device");
     control.cameraDeviceId = "dshow:camera-B";
     ok &= expect(attempt.changed(control), "A to B must permit a new attempt even with the same revision");
     attempt.record(control);

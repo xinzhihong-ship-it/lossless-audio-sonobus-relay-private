@@ -21,7 +21,7 @@ The source archive and complete reproducible configuration are available from th
 - Archive SHA-256: `04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4`
 - FFmpeg source revision reported by the distributor: <https://github.com/FFmpeg/FFmpeg/commit/db69d06eee>
 - Physical-camera boundary: `SonoBusVideoCaptureHelper.exe` uses Windows `MediaCapture` in `SharedReadOnly` mode and writes NV12 to the 64-bit FFmpeg stdin; that path never gives FFmpeg ownership of a physical camera.
-- Legacy virtual-camera fallback: packages also include `ffmpeg32.exe`, a pinned Win32 build for 32-bit DirectShow filters such as older virtual-camera drivers. Only a selected `dshow:` device uses this process; the 64-bit VST remains a 64-bit plugin.
+- Legacy virtual-camera path: packages also include `ffmpeg32.exe`, a pinned Win32 build for 32-bit DirectShow filters such as older virtual-camera drivers. Only an explicitly selected `dshow:` device uses this process; the 64-bit VST remains a 64-bit plugin. It is never an automatic fallback.
 - Win32 archive: <https://github.com/Defisym/FFmpeg-Builds-Win32/releases/download/autobuild-2026-08-30-16-13/ffmpeg-n7.1.5-18-g3978a28d5b-win32-gpl-7.1.zip>
 - Win32 archive SHA-256: `e636ed7f44a3f600d7a80370bc655593caf31720e2c4051b18a61d2427ad5ca9`
 - Required FFmpeg path: rawvideo/NV12 input, H.264 encoder, and RTSP/TCP muxer.

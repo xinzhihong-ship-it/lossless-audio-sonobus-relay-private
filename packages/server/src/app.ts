@@ -2789,6 +2789,13 @@ const adminPageHtml = String.raw`<!doctype html>
       }
     }
 
+    function sameCameraDeviceId(left, right) {
+      const isDirectShow = (value) => typeof value === "string" && value.toLowerCase().startsWith("dshow:");
+      return isDirectShow(left) || isDirectShow(right)
+        ? String(left).toLowerCase() === String(right).toLowerCase()
+        : left === right;
+    }
+
     function renderCameraControl(container, connection, control, enrollment, videoRoom, systemBridge) {
       if (systemBridge || connection.type !== "sonobus-connection" || !videoRoom) {
         container.textContent = "-";
@@ -2849,13 +2856,22 @@ const adminPageHtml = String.raw`<!doctype html>
         option.textContent = camera.name;
         select.appendChild(option);
       }
-      if (control.cameraDeviceId && !cameras.some((camera) => camera.id === control.cameraDeviceId)) {
+      const selectedCamera = control.cameraDeviceId
+        ? cameras.find((camera) => sameCameraDeviceId(camera.id, control.cameraDeviceId))
+        : undefined;
+      if (control.cameraDeviceId && !selectedCamera) {
         const remembered = document.createElement("option");
         remembered.value = control.cameraDeviceId;
         remembered.textContent = "上次设备（当前未发现）";
         select.appendChild(remembered);
       }
-      select.value = control.cameraDeviceId || "";
+      // Use the current enumerated spelling for the option value while preserving
+      // the administrator's original selector in later toggle/quality requests.
+      select.value = selectedCamera?.id || control.cameraDeviceId || "";
+      const selectedDeviceId = () => selectedCamera
+        && sameCameraDeviceId(select.value, selectedCamera.id)
+        ? control.cameraDeviceId
+        : select.value || null;
       select.title = "选择该人员客户端上的摄像头设备";
       select.addEventListener("change", () => runAction(() => setCameraDesired(connection, control.enabled, select.value || null)));
       controls.appendChild(select);
@@ -2864,7 +2880,7 @@ const adminPageHtml = String.raw`<!doctype html>
       toggle.className = control.enabled ? "danger" : "secondary";
       toggle.textContent = control.enabled ? "关闭摄像头" : "开启摄像头";
       toggle.disabled = !control.enabled && !select.value;
-      toggle.addEventListener("click", () => runAction(() => setCameraDesired(connection, !control.enabled, select.value || null)));
+      toggle.addEventListener("click", () => runAction(() => setCameraDesired(connection, !control.enabled, selectedDeviceId())));
       controls.appendChild(toggle);
 
       if (enrollment) {
@@ -2914,7 +2930,7 @@ const adminPageHtml = String.raw`<!doctype html>
       const bitrateSelect = makeQualitySelect("码率上限（输出）", control.maxBitrate, [
         [0, "自动"], [20000000, "20 Mbps"], [12000000, "12 Mbps"], [8000000, "8 Mbps"], [5000000, "5 Mbps"], [3000000, "3 Mbps"], [1500000, "1.5 Mbps"]
       ]);
-      const applyQuality = () => runAction(() => setCameraDesired(connection, control.enabled, select.value || null, {
+      const applyQuality = () => runAction(() => setCameraDesired(connection, control.enabled, selectedDeviceId(), {
         maxHeight: Number(heightSelect.value),
         maxFps: Number(fpsSelect.value),
         maxBitrate: Number(bitrateSelect.value)

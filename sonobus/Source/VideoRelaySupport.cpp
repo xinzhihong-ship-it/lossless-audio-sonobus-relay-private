@@ -20,6 +20,19 @@ juce::StringArray fields(const juce::String& line, const juce::String& prefix)
 }
 }
 
+bool sameCameraDeviceId(const juce::String& left, const juce::String& right)
+{
+    const auto directShow = left.startsWithIgnoreCase("dshow:") || right.startsWithIgnoreCase("dshow:");
+    return directShow ? left.equalsIgnoreCase(right) : left == right;
+}
+
+int findCameraDeviceIndex(const juce::Array<CameraDevice>& devices, const juce::String& id)
+{
+    for (int index = 0; index < devices.size(); ++index)
+        if (sameCameraDeviceId(devices[index].id, id)) return index;
+    return -1;
+}
+
 bool isKnownVirtualCamera(const juce::String& id, const juce::String& name)
 {
     const auto value = id + " " + name;

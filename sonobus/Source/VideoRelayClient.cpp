@@ -382,29 +382,32 @@ void VideoRelayClient::runVideoLoop()
         const auto now = juce::Time::getMillisecondCounter();
         const auto nowHi = juce::Time::getMillisecondCounterHiRes();
         const auto selectedCamera = desired.cameraDeviceId;
+        auto selectedDeviceIndex = sonobus::video::findCameraDeviceIndex(devices, selectedCamera);
         bool selectedIsMoLiXiu = false;
 #if JUCE_WINDOWS
-        for (const auto& device : devices)
+        const auto refreshSelection = [&]()
         {
-            if (device.id != selectedCamera) continue;
-            selectedIsMoLiXiu = isMoLiXiuCamera(device);
-            break;
-        }
-        if (! selectedIsMoLiXiu)
-            selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
+            selectedDeviceIndex = sonobus::video::findCameraDeviceIndex(devices, selectedCamera);
+            selectedIsMoLiXiu = selectedDeviceIndex >= 0 && isMoLiXiuCamera(devices[selectedDeviceIndex]);
+            if (! selectedIsMoLiXiu)
+                selectedIsMoLiXiu = isMoLiXiuCamera({ selectedCamera, {} });
+        };
+        refreshSelection();
 #endif
-        bool selectedMissing = desired.cameraDeviceId.isNotEmpty();
-        for (const auto& device : devices)
-            if (device.id == desired.cameraDeviceId) selectedMissing = false;
+        const bool selectedMissing = selectedCamera.isNotEmpty() && selectedDeviceIndex < 0;
         const bool unavailable = ! selectedIsMoLiXiu && (devices.isEmpty() || selectedMissing);
         if ((unavailable && nowHi >= nextDeviceRefreshMs) || (! unavailable && now - lastDeviceRefresh >= 5000))
         {
             enumerationError.clear();
             devices = getCameraDevices(ffmpegPath, enumerationError);
             lastDeviceRefresh = now;
-            bool stillMissing = desired.cameraDeviceId.isNotEmpty();
-            for (const auto& device : devices)
-                if (device.id == desired.cameraDeviceId) stillMissing = false;
+#if JUCE_WINDOWS
+            refreshSelection();
+#else
+            selectedDeviceIndex = sonobus::video::findCameraDeviceIndex(devices, selectedCamera);
+#endif
+            const bool stillMissing = desired.cameraDeviceId.isNotEmpty()
+                                   && sonobus::video::findCameraDeviceIndex(devices, desired.cameraDeviceId) < 0;
             if (devices.isEmpty() || stillMissing)
             {
                 nextDeviceRefreshMs = nowHi + deviceRefreshDelayMs;
@@ -450,7 +453,8 @@ void VideoRelayClient::runVideoLoop()
             }
 #endif
 
-            const auto captureCamera = selectedIsMoLiXiu ? juce::String("molixiu-hook") : selectedCamera;
+            const auto selectedCaptureCamera = selectedDeviceIndex >= 0 ? devices[selectedDeviceIndex].id : selectedCamera;
+            const auto captureCamera = selectedIsMoLiXiu ? juce::String("molixiu-hook") : selectedCaptureCamera;
 
             bool cameraAvailable = false;
 #if JUCE_WINDOWS
@@ -460,8 +464,7 @@ void VideoRelayClient::runVideoLoop()
             }
             else
 #endif
-                for (const auto& device : devices)
-                    if (device.id == selectedCamera) cameraAvailable = true;
+                cameraAvailable = selectedDeviceIndex >= 0;
             if (! cameraAvailable)
             {
                 stopPublisher();
@@ -509,7 +512,8 @@ void VideoRelayClient::runVideoLoop()
                     nextPublisherAttemptMs = nowHi + 5000.0;
                     setStatus(Status::startingCamera);
                     auto mode = selectedIsMoLiXiu ? CameraMode { 1280, 720, 30.0 }
-                                                  : captureCamera == runningDesired.cameraDeviceId && runningMode.isValid()
+                                                  : sonobus::video::sameCameraDeviceId(captureCamera, runningDesired.cameraDeviceId)
+                                                       && runningMode.isValid()
                                                       ? runningMode : findPreferredCameraMode(ffmpegPath, captureCamera);
                     if (! mode.isValid())
                     {
@@ -869,7 +873,7 @@ juce::Array<VideoRelayClient::CameraDevice> VideoRelayClient::getCameraDevices(c
             bool duplicate = false;
             for (auto& existing : result)
             {
-                if (existing.id != device.id) continue;
+                if (! sonobus::video::sameCameraDeviceId(existing.id, device.id)) continue;
                 // If a filter is visible to both registrations, prefer the x86
                 // runtime because the legacy virtual-camera DLL is x86 in-process.
                 if (device.id.startsWithIgnoreCase("dshow:") && runtimePath != ffmpegPath)
@@ -1117,14 +1121,9 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
 {
     const auto outputMode = outputModeFor(mode, desired);
     juce::String captureFfmpegPath = ffmpegPath;
-    for (const auto& device : devices)
-    {
-        if (device.id == desired.cameraDeviceId && device.captureFfmpegPath.isNotEmpty())
-        {
-            captureFfmpegPath = device.captureFfmpegPath;
-            break;
-        }
-    }
+    const auto deviceIndex = sonobus::video::findCameraDeviceIndex(devices, desired.cameraDeviceId);
+    if (deviceIndex >= 0 && devices[deviceIndex].captureFfmpegPath.isNotEmpty())
+        captureFfmpegPath = devices[deviceIndex].captureFfmpegPath;
     logMsg("startPublisher camera=" + desired.cameraDeviceId + " encoders probe begin");
     const auto encoders = availableEncoders(captureFfmpegPath);
     logMsg("startPublisher encoders=" + juce::String(encoders.size()));
@@ -1149,13 +1148,8 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
     const auto dshowOnly = desired.cameraDeviceId.startsWithIgnoreCase("dshow:");
     bool knownVirtualDshow = false;
 #if JUCE_WINDOWS
-    if (dshowOnly)
-        for (const auto& device : devices)
-            if (device.id == desired.cameraDeviceId)
-            {
-                knownVirtualDshow = sonobus::video::isKnownVirtualCamera(device.id, device.name);
-                break;
-            }
+    if (dshowOnly && deviceIndex >= 0)
+        knownVirtualDshow = sonobus::video::isKnownVirtualCamera(devices[deviceIndex].id, devices[deviceIndex].name);
     if (dshowOnly && ! knownVirtualDshow)
         launchErrors = sonobus::video::translated(u8"物理摄像头必须使用 Windows SharedReadOnly；已拒绝独占 DirectShow");
 #endif
@@ -1203,7 +1197,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
             break;
         }
         auto cameraName = desired.cameraDeviceId;
-        for (const auto& device : devices) if (device.id == desired.cameraDeviceId) cameraName = device.name;
+        if (deviceIndex >= 0) cameraName = devices[deviceIndex].name;
         if (desired.cameraDeviceId == "molixiu-hook") cameraName = sonobus::video::translated(u8"魔力秀进程内摄像头");
         {
             const juce::ScopedLock lock(stateLock);
@@ -1242,9 +1236,8 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
         // dshow: id now carries the ASCII alternative name (@device_sw_...) when available,
         // falling back to the display name, so capture never has to match Chinese names.
         juce::String dshowDevice;
-        for (const auto& device : devices)
-            if (device.id == desired.cameraDeviceId)
-                dshowDevice = desired.cameraDeviceId.substring(6);
+        if (deviceIndex >= 0)
+            dshowDevice = devices[deviceIndex].id.substring(6);
         if (dshowDevice.isNotEmpty())
         {
             auto process = std::make_unique<juce::ChildProcess>();
@@ -1283,8 +1276,7 @@ bool VideoRelayClient::startPublisher(const juce::String& ffmpegPath,
                 && ! process->waitForProcessToFinish(1500))
             {
                 auto cameraName = desired.cameraDeviceId;
-                for (const auto& device : devices)
-                    if (device.id == desired.cameraDeviceId) cameraName = device.name;
+                if (deviceIndex >= 0) cameraName = devices[deviceIndex].name;
                 // Never wait indefinitely if another thread owns stateLock.
                 bool stored = false;
                 for (int attempt = 0; attempt < 30; ++attempt)

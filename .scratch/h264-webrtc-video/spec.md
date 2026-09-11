@@ -10,7 +10,7 @@ The current SBV1 JPEG-over-UDP relay is bandwidth-heavy, fragments every frame i
 
 - Fully self-hosted; no VDO.Ninja or third-party runtime video service.
 - Windows and macOS camera publishers in SonoBus Standalone, VST3, and AU builds.
-- Windows selects the highest-throughput color source currently available through `SharedReadOnly`; macOS selects the highest verified 60 FPS mode. The administrator may set persisted output resolution/FPS/bitrate caps below the captured mode, never above it.
+- Windows physical cameras select the highest-throughput color source currently available through `SharedReadOnly`; macOS selects the highest verified 60 FPS mode. An explicitly selected known virtual `dshow:` device may use the DirectShow runtime, but virtual devices are never automatic fallback sources. The administrator may set persisted output resolution/FPS/bitrate caps below the captured mode, never above it.
 - End-to-end latency target: below 500 ms.
 - 1–5 simultaneous viewers per group.
 - Browser viewers install nothing.

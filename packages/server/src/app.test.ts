@@ -148,6 +148,10 @@ test("admin web page is served for browser-based remote administration", async (
     assert.match(html, /td\[colspan\]/);
     assert.match(html, /authGeneration !== generation/);
     assert.match(html, /adminSessionCurrent\(session\)/);
+    assert.match(html, /function sameCameraDeviceId\(left, right\)/);
+    assert.match(html, /cameras\.find\(\(camera\) => sameCameraDeviceId\(camera\.id, control\.cameraDeviceId\)\)/);
+    assert.match(html, /select\.value = selectedCamera\?\.id \|\| control\.cameraDeviceId \|\| ""/);
+    assert.match(html, /sameCameraDeviceId\(select\.value, selectedCamera\.id\)/);
   } finally {
     await app.close();
   }

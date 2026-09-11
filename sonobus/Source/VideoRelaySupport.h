@@ -7,6 +7,11 @@
 
 namespace sonobus::video
 {
+// Camera IDs are opaque to the control plane. Windows DirectShow selectors are
+// stable identifiers but case-insensitive; match their complete value without
+// fuzzy name or suffix matching.
+bool sameCameraDeviceId(const juce::String& left, const juce::String& right);
+
 // Administrator state used to decide whether a new publisher launch was requested.
 // The enabled flag is handled by the caller, which resets the attempt when the
 // administrator disables video.
@@ -22,7 +27,7 @@ struct PublisherControl
 
     bool sameLaunchAs(const PublisherControl& other) const
     {
-        return cameraDeviceId == other.cameraDeviceId && ingestPath == other.ingestPath
+        return sameCameraDeviceId(cameraDeviceId, other.cameraDeviceId) && ingestPath == other.ingestPath
             && publishUser == other.publishUser && publishNonce == other.publishNonce
             && rtspPort == other.rtspPort && maxHeight == other.maxHeight
             && maxFps == other.maxFps && maxBitrate == other.maxBitrate;
@@ -59,6 +64,8 @@ struct CameraDevice
     // Internal capture detail; never included in the status payload.
     juce::String captureFfmpegPath;
 };
+
+int findCameraDeviceIndex(const juce::Array<CameraDevice>& devices, const juce::String& id);
 
 struct CameraMode
 {
